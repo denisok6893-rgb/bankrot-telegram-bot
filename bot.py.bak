@@ -1,0 +1,112 @@
+import asyncio
+import os
+import time
+import uuid
+import aiohttp
+from dotenv import load_dotenv
+
+from aiogram import Bot, Dispatcher
+from aiogram.filters import CommandStart
+from aiogram.types import Message
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
+SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro")
+
+if not BOT_TOKEN or not AUTH_KEY:
+    raise SystemExit("Ошибка: не заполнен .env")
+
+dp = Dispatcher()
+
+_token = None
+_token_exp = 0
+
+
+async def get_token(session):
+    global _token, _token_exp
+    now = int(time.time())
+    if _token and now < (_token_exp - 10):
+        return _token
+
+    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    headers = {
+        "Authorization": f"Basic {AUTH_KEY}",
+        "RqUID": str(uuid.uuid4()),
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    async with session.post(url, headers=headers, data={"scope": SCOPE}) as r:
+        if r.status != 200:
+            raise RuntimeError(await r.text())
+        data = await r.json()
+        _token = data["access_token"]
+        _token_exp = int(data["expires_at"])
+        return _token
+
+
+async def ask_gigachat(text: str) -> str:
+    async with aiohttp.ClientSession() as session:
+        token = await get_token(session)
+
+        payload = {
+            "model": MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты помощник адвоката по банкротству в РФ. "
+                        "Пиши строго юридическим языком. "
+                        "Если данных не хватает — задай уточняющие вопросы."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.2,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        async with session.post(
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=90,
+        ) as r:
+            if r.status != 200:
+                raise RuntimeError(await r.text())
+            data = await r.json()
+            return data["choices"][0]["message"]["content"]
+
+
+@dp.message(CommandStart())
+async def start(message: Message):
+    await message.answer(
+        "Я ассистент адвоката по банкротству.\n"
+        "Опиши задачу."
+    )
+
+
+@dp.message()
+async def handle(message: Message):
+    await message.answer("Готовлю ответ…")
+    try:
+        reply = await ask_gigachat(message.text)
+        await message.answer(reply[:3500])
+    except Exception as e:
+        await message.answer(f"Ошибка GigaChat:\n{e}")
+
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
