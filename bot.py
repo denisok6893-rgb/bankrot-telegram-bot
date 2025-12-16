@@ -1,3 +1,8 @@
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.context import FSMContext
+from keyboards import main_menu_kb, cases_menu_ikb
+from aiogram.types import CallbackQuery
 import asyncio
 import os
 import time
@@ -15,7 +20,12 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+class CaseCreate(StatesGroup):
+    code_name = State()
+    case_number = State()
+    court = State()
+    judge = State()
+    fin_manager = State()
 
 # =========================
 # env
@@ -113,12 +123,43 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
-            "SELECT id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at "
-            "FROM cases WHERE owner_user_id=? AND id=?",
+            """
+            SELECT id, code_name, case_number, court, judge, fin_manager,
+                   stage, notes, created_at, updated_at
+              FROM cases
+             WHERE owner_user_id = ?
+               AND id = ?
+            """,
             (owner_user_id, cid),
         )
         return cur.fetchone()
 
+
+def update_case_fields(
+    owner_user_id: int,
+    cid: int,
+    *,
+    case_number: str | None = None,
+    court: str | None = None,
+    judge: str | None = None,
+    fin_manager: str | None = None,
+) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            UPDATE cases
+               SET case_number = COALESCE(?, case_number),
+                   court = COALESCE(?, court),
+                   judge = COALESCE(?, judge),
+                   fin_manager = COALESCE(?, fin_manager),
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+               AND owner_user_id = ?
+            """,
+            (case_number, court, judge, fin_manager, cid, owner_user_id),
+        )
+        con.commit()
 
 # =========================
 # GigaChat (token cache + retry)
@@ -203,7 +244,9 @@ async def gigachat_chat(system_prompt: str, user_text: str) -> str:
 # =========================
 # bot logic
 # =========================
-dp = Dispatcher()
+from aiogram.fsm.storage.memory import MemoryStorage
+
+dp = Dispatcher(storage=MemoryStorage())
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
@@ -321,7 +364,142 @@ async def start_cmd(message: Message):
     if not is_allowed(uid):
         return
     cancel_flow(uid)
-    await message.answer("Выбери задачу 👇", reply_markup=main_keyboard())
+    await message.answer("Выбери задачу 👇", reply_markup=main_menu_kb())
+@dp.message(lambda m: m.text == "📂 Дела")
+async def cases_entry(message: Message):
+    await message.answer("Раздел «Дела». Выбери действие:", reply_markup=cases_menu_ikb())
+
+
+@dp.message(lambda m: m.text == "🧑‍⚖️ Клиенты")
+async def clients_entry(message: Message):
+    await message.answer("Раздел «Клиенты». (Сделаем дальше)")
+
+@dp.message(lambda m: m.text == "📝 Документы")
+async def docs_entry(message: Message):
+    await message.answer("Раздел «Документы». (Сделаем дальше)")
+
+@dp.message(lambda m: m.text == "ℹ️ Помощь")
+async def help_entry(message: Message):
+    await message.answer("Помощь: выбери раздел кнопками. Если что-то сломалось — напиши /start")
+@dp.callback_query(lambda c: c.data == "back:main")
+async def back_to_main(call: CallbackQuery):
+    await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data == "case:new")
+async def case_new(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.set_state(CaseCreate.code_name)
+    await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
+    await call.answer()
+@dp.message(CaseCreate.code_name)
+async def case_step_code_name(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи кодовое название дела.")
+        return
+
+    await state.update_data(code_name=text)
+    await state.set_state(CaseCreate.case_number)
+    await message.answer("Теперь введи номер дела (можно '-' если пока нет).")
+@dp.message(CaseCreate.case_number)
+async def case_step_case_number(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи номер дела или '-'.")
+        return
+
+    await state.update_data(case_number=None if text == "-" else text)
+    await state.set_state(CaseCreate.court)
+    await message.answer("Укажи суд (например: АС г. Москвы) или '-'.")
+
+
+@dp.message(CaseCreate.court)
+async def case_step_court(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Укажи суд или '-'.")
+        return
+
+    await state.update_data(court=None if text == "-" else text)
+    await state.set_state(CaseCreate.judge)
+    await message.answer("Укажи судью (ФИО) или '-'.")
+
+
+@dp.message(CaseCreate.judge)
+async def case_step_judge(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Укажи судью или '-'.")
+        return
+
+    await state.update_data(judge=None if text == "-" else text)
+    await state.set_state(CaseCreate.fin_manager)
+    await message.answer("Укажи финансового управляющего или '-'.")
+
+
+@dp.message(CaseCreate.fin_manager)
+async def case_step_fin_manager(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Укажи ФУ или '-'.")
+        return
+
+    await state.update_data(fin_manager=None if text == "-" else text)
+    data = await state.get_data()
+
+    code_name = data.get("code_name")
+    case_number = data.get("case_number")
+    court = data.get("court")
+    judge = data.get("judge")
+    fin_manager = data.get("fin_manager")
+
+    # создаём дело и заполняем поля
+    cid = create_case(uid, code_name)
+    update_case_fields(uid, cid, case_number=case_number, court=court, judge=judge, fin_manager=fin_manager)
+
+    await state.clear()
+
+    await message.answer(
+        "✅ Дело создано.\n"
+        f"ID: {cid}\n"
+        f"Код: {code_name}\n"
+        f"Номер: {case_number or '-'}\n"
+        f"Суд: {court or '-'}\n"
+        f"Судья: {judge or '-'}\n"
+        f"ФУ: {fin_manager or '-'}"
+    )
+
+@dp.callback_query(lambda c: c.data == "case:list")
+async def case_list(call: CallbackQuery):
+    await call.message.answer("Список дел пока пуст. (Следующим шагом подключим хранение)")
+    await call.answer()
 
 
 @dp.message(Command("case_new"))
@@ -440,55 +618,6 @@ async def on_callback(call: CallbackQuery):
 # =========================
 # main text handler: ONLY non-commands
 # =========================
-@dp.message()
-async def on_message(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-
-    text = (message.text or "").strip()
-    if text.startswith("/"):
-        return
-
-    if uid not in USER_FLOW:
-        await message.answer("Сначала выбери задачу через /start.")
-        return
-
-    flow = USER_FLOW[uid]
-
-    if flow.get("flow") == "motion":
-        if flow.get("stage") != "fill":
-            await message.answer("Выбери тип суда кнопкой:", reply_markup=court_type_keyboard())
-            return
-
-        step = int(flow.get("step", 0))
-        if step >= len(MOTION_STEPS):
-            cancel_flow(uid)
-            await message.answer("Анкета завершена. Меню 👇", reply_markup=main_keyboard())
-            return
-
-        key = MOTION_STEPS[step][0]
-        flow["answers"][key] = text
-        step += 1
-        flow["step"] = step
-
-        if step < len(MOTION_STEPS):
-            await message.answer(MOTION_STEPS[step][1], reply_markup=motion_actions_keyboard())
-            return
-
-        await message.answer("Принял данные. Готовлю ходатайство…")
-        try:
-            user_text = build_motion_user_text(flow.get("answers", {}), flow.get("court_type") or "не указано")
-            result = await gigachat_chat(system_prompt_for_motion(flow.get("court_type") or "не указано"), user_text)
-            LAST_RESULT[uid] = result
-            await message.answer(result)
-            await message.answer("Экспорт 👇", reply_markup=export_keyboard())
-        except Exception as e:
-            await message.answer(f"Ошибка GigaChat:\n{e}")
-
-        cancel_flow(uid)
-        return
-
     if flow.get("flow") == "settlement":
         step = int(flow.get("step", 0))
         if step >= len(SETTLEMENT_STEPS):
@@ -528,3 +657,20 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+@dp.message()
+async def main_text_router(message: Message, state: FSMContext):
+    # Если идёт FSM (создание дела и т.п.) — не мешаем
+    if await state.get_state() is not None:
+        return
+
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    if uid not in USER_FLOW:
+        await message.answer("Сначала выбери задачу через /start.")
+        return
+
+    # дальше — твоя старая логика USER_FLOW (motion / settlement)
+    flow = USER_FLOW[uid]
+    text = (message.text or "").strip()
