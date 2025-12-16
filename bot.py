@@ -2,19 +2,25 @@ import asyncio
 import os
 import time
 import uuid
-from typing import Dict, Any, List, Tuple, Set
+import json
+from typing import Dict, Any, List, Tuple
+from datetime import datetime
+from pathlib import Path
+import sqlite3
 
 import aiohttp
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-load_dotenv()
 
-ENV_PATH = "/root/bankrot_bot/.env"
+# =========================
+# env
+# =========================
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
@@ -22,221 +28,111 @@ SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro")
 
 RAW_ALLOWED = (os.getenv("ALLOWED_USERS") or "").strip()
-RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()  # опционально
-_GC_TOKEN = None
-_GC_TOKEN_EXPIRES_AT = 0
-_GC_TOKEN_LOCK = asyncio.Lock()
+RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()
 
-
-def parse_ids(raw: str) -> Set[int]:
-    out: Set[int] = set()
-    for part in raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            out.add(int(part))
-    return out
-
-
-ALLOWED_USERS: Set[int] = parse_ids(RAW_ALLOWED)
-ADMIN_USERS: Set[int] = parse_ids(RAW_ADMINS) if RAW_ADMINS else set(ALLOWED_USERS)
+DB_PATH = os.getenv("DB_PATH", "/root/bankrot_bot/bankrot.db")
 
 if not BOT_TOKEN or not AUTH_KEY:
     raise SystemExit("Ошибка: не заполнен .env (BOT_TOKEN / GIGACHAT_AUTH_KEY)")
 
-dp = Dispatcher()
 
-USER_FLOW: Dict[int, Dict[str, Any]] = {}
-LAST_RESULT: Dict[int, str] = {}
-
-_token: str | None = None
-_token_exp: int = 0
-
-
-def is_allowed(user_id: int) -> bool:
-    # Пока список пуст — не блокируем (защита от случайной блокировки).
-    return (not ALLOWED_USERS) or (user_id in ALLOWED_USERS)
+def _parse_ids(s: str) -> set[int]:
+    out = set()
+    for x in (s.split(",") if s else []):
+        x = x.strip()
+        if x.isdigit():
+            out.add(int(x))
+    return out
 
 
-def is_admin(user_id: int) -> bool:
-    # Если ADMIN_USERS пуст — админы = allowed
-    if not ADMIN_USERS:
-        return user_id in ALLOWED_USERS
-    return user_id in ADMIN_USERS
+ALLOWED_USERS = _parse_ids(RAW_ALLOWED)
+ADMIN_USERS = _parse_ids(RAW_ADMINS)
 
 
-def _write_env_key(key: str, value: str) -> None:
-    # атомарное обновление .env
-    try:
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except FileNotFoundError:
-        lines = []
-
-    new_lines: List[str] = []
-    replaced = False
-    for line in lines:
-        if line.startswith(f"{key}="):
-            new_lines.append(f"{key}={value}")
-            replaced = True
-        else:
-            new_lines.append(line)
-
-    if not replaced:
-        new_lines.append(f"{key}={value}")
-
-    tmp = ENV_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(new_lines) + "\n")
-    os.replace(tmp, ENV_PATH)
+def is_allowed(uid: int) -> bool:
+    return (not ALLOWED_USERS) or (uid in ALLOWED_USERS) or (uid in ADMIN_USERS)
 
 
-def _sync_env_from_memory() -> None:
-    allowed_str = ",".join(str(x) for x in sorted(ALLOWED_USERS))
-    admins_str = ",".join(str(x) for x in sorted(ADMIN_USERS))
-    _write_env_key("ALLOWED_USERS", allowed_str)
-    _write_env_key("ADMIN_USERS", admins_str)
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_USERS
 
 
-# ---------- keyboards ----------
-def main_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🧾 Ходатайство (онлайн/ВКС)", callback_data="mode:motion")
-    kb.button(text="📄 Мировое соглашение", callback_data="mode:settlement")
-    kb.button(text="❓ Вопрос по банкротству", callback_data="mode:qa")
-    kb.adjust(1)
-    return kb.as_markup()
+# =========================
+# sqlite (cases)
+# =========================
+def init_db() -> None:
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER NOT NULL,
+            code_name TEXT NOT NULL,
+            case_number TEXT,
+            court TEXT,
+            judge TEXT,
+            fin_manager TEXT,
+            stage TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        con.commit()
 
 
-def court_type_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🏛 Арбитраж", callback_data="court:arbitration")
-    kb.button(text="⚖ СОЮ", callback_data="court:general")
-    kb.adjust(2)
-    return kb.as_markup()
+def _now() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def motion_actions_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Черновик сейчас", callback_data="motion:generate_now")
-    kb.button(text="❌ Отмена", callback_data="motion:cancel")
-    kb.adjust(1)
-    return kb.as_markup()
+def create_case(owner_user_id: int, code_name: str) -> int:
+    now = _now()
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO cases (owner_user_id, code_name, created_at, updated_at) VALUES (?,?,?,?)",
+            (owner_user_id, code_name.strip(), now, now),
+        )
+        con.commit()
+        return int(cur.lastrowid)
 
 
-def settlement_actions_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Черновик сейчас", callback_data="settlement:generate_now")
-    kb.button(text="❌ Отмена", callback_data="settlement:cancel")
-    kb.adjust(1)
-    return kb.as_markup()
+def list_cases(owner_user_id: int, limit: int = 20) -> List[Tuple]:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id, code_name, case_number, stage, updated_at "
+            "FROM cases WHERE owner_user_id=? ORDER BY id DESC LIMIT ?",
+            (owner_user_id, limit),
+        )
+        return cur.fetchall()
 
 
-def export_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📋 Экспорт для Word", callback_data="export:word")
-    kb.adjust(1)
-    return kb.as_markup()
+def get_case(owner_user_id: int, cid: int) -> Tuple | None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at "
+            "FROM cases WHERE owner_user_id=? AND id=?",
+            (owner_user_id, cid),
+        )
+        return cur.fetchone()
 
 
-# ---------- questionnaires ----------
-MOTION_STEPS: List[Tuple[str, str]] = [
-    ("court_name", "1/6. Укажи суд (название)."),
-    ("case_no", "2/6. Укажи № дела."),
-    ("applicant", "3/6. Кто подаёт ходатайство (ФИО/организация, статус)?"),
-    ("hearing_dt", "4/6. Дата и время заседания (если не знаешь — «не знаю»)."),
-    ("reason", "5/6. Причина онлайн-участия (кратко, по делу)."),
-    ("contacts_attachments", "6/6. Контакты для связи/ВКС + приложения (ордер/доверенность). Если нет — «нет»."),
-]
-
-SETTLEMENT_STEPS: List[Tuple[str, str]] = [
-    ("court_case", "1/7. Суд и № дела (можно одной строкой)."),
-    ("parties", "2/7. Стороны (кто с кем заключает мировое соглашение)."),
-    ("dispute", "3/7. Суть спора/что урегулируем (1–3 предложения)."),
-    ("terms", "4/7. Условия: сумма/график/способ оплаты (максимально конкретно)."),
-    ("expenses", "5/7. Судебные расходы: как распределяем (или «как обычно/по закону»)."),
-    ("execution", "6/7. Порядок исполнения и ответственность за нарушение (если нужно — «стандартно»)."),
-    ("other", "7/7. Особые условия (если нет — «нет»)."),
-]
+# =========================
+# GigaChat (token cache + retry)
+# =========================
+_GC_TOKEN: str | None = None
+_GC_TOKEN_EXPIRES_AT: float = 0.0
+_GC_TOKEN_LOCK = asyncio.Lock()
 
 
-def start_motion(uid: int):
-    USER_FLOW[uid] = {"flow": "motion", "stage": "choose_court_type", "court_type": None, "step": 0, "answers": {}}
-
-
-def start_settlement(uid: int):
-    USER_FLOW[uid] = {"flow": "settlement", "stage": "fill", "step": 0, "answers": {}}
-
-
-def cancel_flow(uid: int):
-    USER_FLOW.pop(uid, None)
-
-
-def system_prompt_for_motion(court_type: str) -> str:
-    law = "АПК РФ" if court_type == "arbitration" else "ГПК РФ"
-    return (
-        "Ты — помощник адвоката в РФ. "
-        "Составь ходатайство об участии в судебном заседании в режиме ВКС/онлайн. "
-        f"Ориентируйся на {law}. "
-        "Пиши строго юридическим языком. Не выдумывай реквизиты. "
-        "Если точные нормы не уверен — формулируй без указания статей. "
-        "Структура: шапка, данные дела, обстоятельства, обоснование, просьба, приложения, подпись/дата."
-    )
-
-
-def system_prompt_for_settlement() -> str:
-    return (
-        "Ты — помощник адвоката в РФ. "
-        "Подготовь проект мирового соглашения для суда (универсально). "
-        "Пиши юридическим языком, структурировано, без выдумок. "
-        "Если данных не хватает — оставь места для заполнения."
-    )
-
-
-def _val(ans: Dict[str, str], key: str) -> str:
-    v = (ans.get(key) or "").strip()
-    return v if v else "не указано"
-
-
-def build_motion_user_text(ans: Dict[str, str], court_type: str, draft: bool) -> str:
-    prefix = "СДЕЛАЙ ЧЕРНОВИК (данные могут быть неполными). " if draft else ""
-    ct = "Арбитраж" if court_type == "arbitration" else "СОЮ"
-    return (
-        f"{prefix}Тип суда: {ct}\n"
-        f"Суд: {_val(ans,'court_name')}\n"
-        f"№ дела: {_val(ans,'case_no')}\n"
-        f"Заявитель: {_val(ans,'applicant')}\n"
-        f"Заседание: {_val(ans,'hearing_dt')}\n"
-        f"Причина онлайн-участия: {_val(ans,'reason')}\n"
-        f"Контакты/приложения: {_val(ans,'contacts_attachments')}\n"
-        "Если есть «не указано», оставь место для заполнения."
-    )
-
-
-def build_settlement_user_text(ans: Dict[str, str], draft: bool) -> str:
-    prefix = "СДЕЛАЙ ЧЕРНОВИК (данные могут быть неполными). " if draft else ""
-    return (
-        f"{prefix}"
-        f"Суд/дело: {_val(ans,'court_case')}\n"
-        f"Стороны: {_val(ans,'parties')}\n"
-        f"Суть урегулирования: {_val(ans,'dispute')}\n"
-        f"Условия: {_val(ans,'terms')}\n"
-        f"Расходы: {_val(ans,'expenses')}\n"
-        f"Исполнение/ответственность: {_val(ans,'execution')}\n"
-        f"Особые условия: {_val(ans,'other')}\n"
-        "Если есть «не указано», оставь место для заполнения."
-    )
-
-
-# ---------- gigachat ----------
 async def get_access_token(session: aiohttp.ClientSession, force_refresh: bool = False) -> str:
     global _GC_TOKEN, _GC_TOKEN_EXPIRES_AT
-
     now = time.time()
-    if (not force_refresh) and _GC_TOKEN and now < _GC_TOKEN_EXPIRES_AT:
-        return _GC_TOKEN
 
     async with _GC_TOKEN_LOCK:
-        now = time.time()
         if (not force_refresh) and _GC_TOKEN and now < _GC_TOKEN_EXPIRES_AT:
             return _GC_TOKEN
 
@@ -245,16 +141,9 @@ async def get_access_token(session: aiohttp.ClientSession, force_refresh: bool =
             "Authorization": f"Basic {AUTH_KEY}",
             "RqUID": str(uuid.uuid4()),
             "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
         }
 
-        async with session.post(
-            url,
-            headers=headers,
-            data={"scope": SCOPE},
-            ssl=False,
-            timeout=30
-        ) as r:
+        async with session.post(url, headers=headers, data={"scope": SCOPE}, ssl=False, timeout=30) as r:
             text = await r.text()
             if r.status != 200:
                 raise RuntimeError(text)
@@ -262,34 +151,32 @@ async def get_access_token(session: aiohttp.ClientSession, force_refresh: bool =
         data = json.loads(text)
         token = data["access_token"]
 
-        # 1) нормальный вариант — expires_in (секунды)
         if "expires_in" in data:
             exp = time.time() + int(data["expires_in"])
-        # 2) запасной — expires_at (может быть epoch в сек или мс)
         elif "expires_at" in data:
             raw = int(data["expires_at"])
-            # если похоже на миллисекунды — переводим в секунды
             exp = (raw / 1000) if raw > 10_000_000_000 else raw
         else:
-            exp = time.time() + 1800  # по умолчанию 30 минут
+            exp = time.time() + 1800
 
         _GC_TOKEN = token
-        _GC_TOKEN_EXPIRES_AT = float(exp) - 30  # запас 30 сек
+        _GC_TOKEN_EXPIRES_AT = float(exp) - 30
         return _GC_TOKEN
 
 
-
 async def gigachat_chat(system_prompt: str, user_text: str) -> str:
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.2,
+    }
+
     async with aiohttp.ClientSession() as session:
         token = await get_access_token(session)
-        payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            "temperature": 0.2,
-        }
+
         async def _call(tkn: str):
             headers = {"Authorization": f"Bearer {tkn}", "Content-Type": "application/json"}
             return await session.post(
@@ -313,65 +200,191 @@ async def gigachat_chat(system_prompt: str, user_text: str) -> str:
         return data["choices"][0]["message"]["content"].strip()
 
 
+# =========================
+# bot logic
+# =========================
+dp = Dispatcher()
 
-# ---------- admin commands ----------
-@dp.message(Command("myid"))
-async def myid(message: Message):
-    await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
-
-
-@dp.message(Command("who"))
-async def who(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    allowed = ", ".join(str(x) for x in sorted(ALLOWED_USERS)) if ALLOWED_USERS else "(пусто)"
-    admins = ", ".join(str(x) for x in sorted(ADMIN_USERS)) if ADMIN_USERS else "(пусто)"
-    await message.answer(f"ALLOWED_USERS: {allowed}\nADMIN_USERS: {admins}")
+USER_FLOW: Dict[int, Dict[str, Any]] = {}
+LAST_RESULT: Dict[int, str] = {}
 
 
-@dp.message(Command("allow"))
-async def allow(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    parts = (message.text or "").split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Используй: /allow 123456789")
-        return
-    uid = int(parts[1])
-    ALLOWED_USERS.add(uid)
-    if not ADMIN_USERS:
-        ADMIN_USERS.add(message.from_user.id)
-    _sync_env_from_memory()
-    await message.answer(f"✅ Добавил {uid} в доступ.")
+def cancel_flow(uid: int) -> None:
+    USER_FLOW.pop(uid, None)
 
 
-@dp.message(Command("deny"))
-async def deny(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    parts = (message.text or "").split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Используй: /deny 123456789")
-        return
-    uid = int(parts[1])
-    if uid == message.from_user.id:
-        await message.answer("Нельзя удалить самого себя через /deny (чтобы не потерять доступ).")
-        return
-    ALLOWED_USERS.discard(uid)
-    ADMIN_USERS.discard(uid)
-    _sync_env_from_memory()
-    await message.answer(f"✅ Убрал {uid} из доступа.")
+def main_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📝 Ходатайство", callback_data="flow:motion")
+    kb.button(text="🤝 Мировое соглашение", callback_data="flow:settlement")
+    kb.adjust(1)
+    return kb.as_markup()
 
 
-# ---------- main flows ----------
+def export_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📄 Экспорт (показать текст)", callback_data="export:word")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def court_type_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Арбитражный суд", callback_data="motion:court:arbitr")
+    kb.button(text="Суд общей юрисдикции", callback_data="motion:court:general")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def motion_actions_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Отмена", callback_data="flow:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def settlement_actions_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Отмена", callback_data="flow:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+MOTION_STEPS = [
+    ("fio", "ФИО заявителя (должника):"),
+    ("case_number", "Номер дела (если есть) или напиши «нет»:"),
+    ("court", "Суд (полное наименование):"),
+    ("judge", "Судья (если известно) или «нет»:"),
+    ("reason", "Причина ходатайства (кратко):"),
+]
+
+SETTLEMENT_STEPS = [
+    ("parties", "Стороны (кто с кем заключает мировое):"),
+    ("dispute", "Суть спора / что урегулируем:"),
+    ("terms", "Условия (что и в какие сроки):"),
+    ("expenses", "Расходы/госпошлина (если есть) или «нет»:"),
+    ("execution", "Исполнение/ответственность за нарушение:"),
+    ("other", "Особые условия (если есть) или «нет»:"),
+]
+
+
+def system_prompt_for_motion(court_type: str) -> str:
+    return (
+        "Ты — юрист по банкротству в России. Составь проект ходатайства об участии в заседании онлайн "
+        "или посредством ВКС. Стиль официальный, корректный, без выдумывания фактов."
+        f" Тип суда: {court_type}."
+    )
+
+
+def system_prompt_for_settlement() -> str:
+    return (
+        "Ты — юрист по банкротству в России. Составь проект мирового соглашения. "
+        "Стиль официальный, без выдумывания фактов; если данных не хватает — оставь места для заполнения."
+    )
+
+
+def _val(ans: Dict[str, str], key: str) -> str:
+    v = (ans.get(key) or "").strip()
+    return v if v else "не указано"
+
+
+def build_motion_user_text(ans: Dict[str, str], court_type: str) -> str:
+    return (
+        f"ФИО: {_val(ans,'fio')}\n"
+        f"Номер дела: {_val(ans,'case_number')}\n"
+        f"Суд: {_val(ans,'court')}\n"
+        f"Судья: {_val(ans,'judge')}\n"
+        f"Причина: {_val(ans,'reason')}\n"
+        f"Тип суда: {court_type}\n"
+        "Сформируй текст ходатайства."
+    )
+
+
+def build_settlement_user_text(ans: Dict[str, str]) -> str:
+    return (
+        f"Стороны: {_val(ans,'parties')}\n"
+        f"Суть урегулирования: {_val(ans,'dispute')}\n"
+        f"Условия: {_val(ans,'terms')}\n"
+        f"Расходы: {_val(ans,'expenses')}\n"
+        f"Исполнение/ответственность: {_val(ans,'execution')}\n"
+        f"Особые условия: {_val(ans,'other')}\n"
+        "Сформируй проект мирового соглашения."
+    )
+
+
+# =========================
+# commands
+# =========================
 @dp.message(CommandStart())
-async def start(message: Message):
-    if not is_allowed(message.from_user.id):
+async def start_cmd(message: Message):
+    uid = message.from_user.id
+    if not is_allowed(uid):
         return
-    cancel_flow(message.from_user.id)
+    cancel_flow(uid)
     await message.answer("Выбери задачу 👇", reply_markup=main_keyboard())
 
 
+@dp.message(Command("case_new"))
+async def case_new_cmd(message: Message):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Формат: /case_new КОДОВОЕ_НАЗВАНИЕ\nПример: /case_new Дело_Иванов_01")
+        return
+    cid = create_case(uid, parts[1])
+    await message.answer(f"✅ Дело создано. ID: {cid}")
+
+
+@dp.message(Command("cases"))
+async def cases_cmd(message: Message):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+    rows = list_cases(uid)
+    if not rows:
+        await message.answer("Пока нет дел. Создай: /case_new КОДОВОЕ_НАЗВАНИЕ")
+        return
+    lines = ["📋 Ваши дела (последние 20):"]
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        lines.append(f"#{cid} | {code_name} | № {case_number or '—'} | стадия: {stage or '—'} | upd: {updated_at}")
+    await message.answer("\n".join(lines))
+
+
+@dp.message(Command("case"))
+async def case_cmd(message: Message):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Формат: /case ID\nПример: /case 3")
+        return
+    cid = int(parts[1])
+    row = get_case(uid, cid)
+    if not row:
+        await message.answer("Не найдено (или это не ваше дело).")
+        return
+    (cid, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
+    text = (
+        f"📌 Дело #{cid}\n"
+        f"Код: {code_name}\n"
+        f"Номер дела: {case_number or '—'}\n"
+        f"Суд: {court or '—'}\n"
+        f"Судья: {judge or '—'}\n"
+        f"ФУ: {fin_manager or '—'}\n"
+        f"Стадия: {stage or '—'}\n"
+        f"Заметки: {notes or '—'}\n"
+        f"Создано: {created_at}\n"
+        f"Обновлено: {updated_at}\n"
+    )
+    await message.answer(text)
+
+
+# =========================
+# callbacks
+# =========================
 @dp.callback_query()
 async def on_callback(call: CallbackQuery):
     uid = call.from_user.id
@@ -390,85 +403,43 @@ async def on_callback(call: CallbackQuery):
             await call.message.answer("Пока нечего экспортировать.")
         return
 
-    if data == "mode:motion":
-        start_motion(uid)
+    if data == "flow:cancel":
+        await call.answer()
+        cancel_flow(uid)
+        await call.message.answer("Ок, отменил. Меню 👇", reply_markup=main_keyboard())
+        return
+
+    if data == "flow:motion":
+        await call.answer()
+        USER_FLOW[uid] = {"flow": "motion", "stage": "choose_court", "court_type": None, "step": 0, "answers": {}}
         await call.message.answer("Выбери тип суда:", reply_markup=court_type_keyboard())
-        await call.answer()
         return
 
-    if data == "mode:settlement":
-        start_settlement(uid)
-        await call.message.answer("Анкета для мирового. Можно сделать черновик в любой момент.", reply_markup=settlement_actions_keyboard())
-        await call.message.answer(SETTLEMENT_STEPS[0][1], reply_markup=settlement_actions_keyboard())
+    if data.startswith("motion:court:"):
         await call.answer()
-        return
-
-    if data == "mode:qa":
-        cancel_flow(uid)
-        await call.message.answer("Ок. Задай вопрос по банкротству одним сообщением.")
-        await call.answer()
-        return
-
-    if data.startswith("court:") and uid in USER_FLOW and USER_FLOW[uid].get("flow") == "motion":
-        ct = data.split(":", 1)[1]
-        USER_FLOW[uid]["court_type"] = ct
-        USER_FLOW[uid]["stage"] = "fill"
-        USER_FLOW[uid]["step"] = 0
-        USER_FLOW[uid]["answers"] = {}
-        await call.message.answer("Анкета. Можно сделать черновик в любой момент.", reply_markup=motion_actions_keyboard())
+        ct = data.split(":")[-1]
+        if uid not in USER_FLOW or USER_FLOW[uid].get("flow") != "motion":
+            USER_FLOW[uid] = {"flow": "motion", "stage": "fill", "court_type": ct, "step": 0, "answers": {}}
+        else:
+            USER_FLOW[uid]["stage"] = "fill"
+            USER_FLOW[uid]["court_type"] = ct
+            USER_FLOW[uid]["step"] = 0
+            USER_FLOW[uid]["answers"] = {}
         await call.message.answer(MOTION_STEPS[0][1], reply_markup=motion_actions_keyboard())
-        await call.answer()
         return
 
-    if data == "motion:cancel":
-        cancel_flow(uid)
-        await call.message.answer("Анкета отменена. Меню 👇", reply_markup=main_keyboard())
+    if data == "flow:settlement":
         await call.answer()
-        return
-
-    if data == "motion:generate_now":
-        if uid not in USER_FLOW or USER_FLOW[uid].get("flow") != "motion" or USER_FLOW[uid].get("court_type") is None:
-            await call.answer("Анкета не активна или не выбран тип суда.", show_alert=True)
-            return
-        await call.answer()
-        await call.message.answer("Готовлю черновик…")
-        try:
-            flow = USER_FLOW[uid]
-            user_text = build_motion_user_text(flow.get("answers", {}), flow["court_type"], draft=True)
-            result = await gigachat_chat(system_prompt_for_motion(flow["court_type"]), user_text)
-            LAST_RESULT[uid] = result
-            await call.message.answer(result)
-            await call.message.answer("Экспорт 👇", reply_markup=export_keyboard())
-        except Exception as e:
-            await call.message.answer(f"Ошибка GigaChat:\n{e}")
-        return
-
-    if data == "settlement:cancel":
-        cancel_flow(uid)
-        await call.message.answer("Анкета отменена. Меню 👇", reply_markup=main_keyboard())
-        await call.answer()
-        return
-
-    if data == "settlement:generate_now":
-        if uid not in USER_FLOW or USER_FLOW[uid].get("flow") != "settlement":
-            await call.answer("Анкета не активна.", show_alert=True)
-            return
-        await call.answer()
-        await call.message.answer("Готовлю черновик…")
-        try:
-            flow = USER_FLOW[uid]
-            user_text = build_settlement_user_text(flow.get("answers", {}), draft=True)
-            result = await gigachat_chat(system_prompt_for_settlement(), user_text)
-            LAST_RESULT[uid] = result
-            await call.message.answer(result)
-            await call.message.answer("Экспорт 👇", reply_markup=export_keyboard())
-        except Exception as e:
-            await call.message.answer(f"Ошибка GigaChat:\n{e}")
+        USER_FLOW[uid] = {"flow": "settlement", "step": 0, "answers": {}}
+        await call.message.answer(SETTLEMENT_STEPS[0][1], reply_markup=settlement_actions_keyboard())
         return
 
     await call.answer()
 
 
+# =========================
+# main text handler: ONLY non-commands
+# =========================
 @dp.message()
 async def on_message(message: Message):
     uid = message.from_user.id
@@ -476,6 +447,8 @@ async def on_message(message: Message):
         return
 
     text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
 
     if uid not in USER_FLOW:
         await message.answer("Сначала выбери задачу через /start.")
@@ -488,12 +461,12 @@ async def on_message(message: Message):
             await message.answer("Выбери тип суда кнопкой:", reply_markup=court_type_keyboard())
             return
 
-        if text.lower() in {"отмена", "/cancel", "cancel"}:
+        step = int(flow.get("step", 0))
+        if step >= len(MOTION_STEPS):
             cancel_flow(uid)
-            await message.answer("Анкета отменена. Меню 👇", reply_markup=main_keyboard())
+            await message.answer("Анкета завершена. Меню 👇", reply_markup=main_keyboard())
             return
 
-        step = int(flow.get("step", 0))
         key = MOTION_STEPS[step][0]
         flow["answers"][key] = text
         step += 1
@@ -503,10 +476,10 @@ async def on_message(message: Message):
             await message.answer(MOTION_STEPS[step][1], reply_markup=motion_actions_keyboard())
             return
 
-        await message.answer("Принял данные. Готовлю итоговый текст…")
+        await message.answer("Принял данные. Готовлю ходатайство…")
         try:
-            user_text = build_motion_user_text(flow.get("answers", {}), flow["court_type"], draft=False)
-            result = await gigachat_chat(system_prompt_for_motion(flow["court_type"]), user_text)
+            user_text = build_motion_user_text(flow.get("answers", {}), flow.get("court_type") or "не указано")
+            result = await gigachat_chat(system_prompt_for_motion(flow.get("court_type") or "не указано"), user_text)
             LAST_RESULT[uid] = result
             await message.answer(result)
             await message.answer("Экспорт 👇", reply_markup=export_keyboard())
@@ -517,12 +490,12 @@ async def on_message(message: Message):
         return
 
     if flow.get("flow") == "settlement":
-        if text.lower() in {"отмена", "/cancel", "cancel"}:
+        step = int(flow.get("step", 0))
+        if step >= len(SETTLEMENT_STEPS):
             cancel_flow(uid)
-            await message.answer("Анкета отменена. Меню 👇", reply_markup=main_keyboard())
+            await message.answer("Анкета завершена. Меню 👇", reply_markup=main_keyboard())
             return
 
-        step = int(flow.get("step", 0))
         key = SETTLEMENT_STEPS[step][0]
         flow["answers"][key] = text
         step += 1
@@ -534,7 +507,7 @@ async def on_message(message: Message):
 
         await message.answer("Принял данные. Готовлю проект мирового…")
         try:
-            user_text = build_settlement_user_text(flow.get("answers", {}), draft=False)
+            user_text = build_settlement_user_text(flow.get("answers", {}))
             result = await gigachat_chat(system_prompt_for_settlement(), user_text)
             LAST_RESULT[uid] = result
             await message.answer(result)
@@ -547,6 +520,7 @@ async def on_message(message: Message):
 
 
 async def main():
+    init_db()
     bot = Bot(token=BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
