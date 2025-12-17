@@ -24,6 +24,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def docs_menu_ikb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="👤 Мой профиль", callback_data="profile:menu")
     kb.button(text="📂 Выбрать дело", callback_data="docs:choose_case")
     kb.button(text="🧾 Ходатайство онлайн (последнее дело)", callback_data="docs:online:last")
     kb.button(text="🔙 Назад", callback_data="back:main")

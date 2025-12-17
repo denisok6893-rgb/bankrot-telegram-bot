@@ -31,6 +31,12 @@ class CaseCreate(StatesGroup):
     court = State()
     judge = State()
     fin_manager = State()
+class ProfileFill(StatesGroup):
+    full_name = State()
+    role = State()
+    address = State()
+    phone = State()
+    email = State()
 class CaseEdit(StatesGroup):
     value = State()
 
@@ -53,9 +59,31 @@ def build_online_hearing_docx(case_row: tuple) -> Path:
     """
     case_row = (id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at)
     """
-    cid, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
+    cid, owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
 
     doc = Document()
+       # Шапка: кому и от кого
+    doc.add_paragraph("В Арбитражный суд")
+    doc.add_paragraph(court or "[УКАЖИТЕ СУД]")
+    doc.add_paragraph("")
+
+    prof = get_profile(owner_user_id)
+    if prof:
+        _, full_name, role, address, phone, email, *_ = prof
+        doc.add_paragraph("От: " + (full_name or "[ФИО/ОРГ]"))
+        if role:
+            doc.add_paragraph("Статус: " + role)
+        if address:
+            doc.add_paragraph("Адрес: " + address)
+        if phone:
+            doc.add_paragraph("Телефон: " + phone)
+        if email:
+            doc.add_paragraph("Email: " + email)
+    else:
+        doc.add_paragraph("От: [ПРОФИЛЬ НЕ ЗАПОЛНЕН]")
+
+    doc.add_paragraph("")
+
     doc.add_paragraph("ХОДАТАЙСТВО")
     doc.add_paragraph("об участии в судебном заседании онлайн (ВКС)")
     doc.add_paragraph("")
@@ -107,6 +135,8 @@ def init_db() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
         con.execute("PRAGMA journal_mode=WAL;")
+
+        # ===== cases =====
         con.execute("""
         CREATE TABLE IF NOT EXISTS cases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +152,21 @@ def init_db() -> None:
             updated_at TEXT NOT NULL
         );
         """)
+
+        # ===== profiles (для документов) =====
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            owner_user_id INTEGER PRIMARY KEY,
+            full_name TEXT,
+            role TEXT,
+            address TEXT,
+            phone TEXT,
+            email TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
         con.commit()
 
 
@@ -157,16 +202,53 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
         cur = con.cursor()
         cur.execute(
             """
-            SELECT id, code_name, case_number, court, judge, fin_manager,
+            SELECT id, owner_user_id, code_name, case_number, court, judge, fin_manager,
                    stage, notes, created_at, updated_at
               FROM cases
              WHERE owner_user_id = ?
                AND id = ?
-            """,
-            (owner_user_id, cid),
+             """,
+             (owner_user_id, cid),
         )
         return cur.fetchone()
 
+def get_profile(owner_user_id: int) -> tuple | None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT owner_user_id, full_name, role, address, phone, email, created_at, updated_at "
+            "FROM profiles WHERE owner_user_id=?",
+            (owner_user_id,),
+        )
+        return cur.fetchone()
+
+
+def upsert_profile(
+    owner_user_id: int,
+    *,
+    full_name: str | None = None,
+    role: str | None = None,
+    address: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            INSERT INTO profiles (owner_user_id, full_name, role, address, phone, email, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(owner_user_id) DO UPDATE SET
+                full_name = COALESCE(excluded.full_name, profiles.full_name),
+                role      = COALESCE(excluded.role, profiles.role),
+                address   = COALESCE(excluded.address, profiles.address),
+                phone     = COALESCE(excluded.phone, profiles.phone),
+                email     = COALESCE(excluded.email, profiles.email),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (owner_user_id, full_name, role, address, phone, email),
+        )
+        con.commit()
 
 def update_case_fields(
     owner_user_id: int,
@@ -193,6 +275,7 @@ def update_case_fields(
             (case_number, court, judge, fin_manager, cid, owner_user_id),
         )
         con.commit()
+
 def update_case_meta(
     owner_user_id: int,
     cid: int,
@@ -482,6 +565,47 @@ async def docs_choose_case(call: CallbackQuery):
 
     await call.message.answer("Выбери дело для документа:", reply_markup=kb.as_markup())
     await call.answer()
+@dp.callback_query(lambda c: c.data == "profile:menu")
+async def profile_menu(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    row = get_profile(uid)
+
+    if not row:
+        text = "Профиль пока не заполнен.\n\nНажми «✏️ Заполнить профиль»."
+    else:
+        _, full_name, role, address, phone, email, *_ = row
+        text = (
+            "👤 Мой профиль:\n"
+            f"ФИО/Орг: {full_name or '-'}\n"
+            f"Статус: {role or '-'}\n"
+            f"Адрес: {address or '-'}\n"
+            f"Телефон: {phone or '-'}\n"
+            f"Email: {email or '-'}\n\n"
+            "Нажми «✏️ Заполнить профиль», чтобы изменить."
+        )
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Заполнить профиль", callback_data="profile:edit")
+    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.adjust(1)
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+    await call.answer()
+@dp.callback_query(lambda c: c.data == "profile:edit")
+async def profile_edit_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.set_state(ProfileFill.full_name)
+    await call.message.answer("Введи ФИО или название организации (как будет в документах).")
+    await call.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith("docs:case:"))
@@ -602,6 +726,94 @@ async def case_step_case_number(message: Message, state: FSMContext):
     await state.set_state(CaseCreate.court)
     await message.answer("Укажи суд (например: АС г. Москвы) или '-'.")
 
+@dp.message(ProfileFill.full_name)
+async def profile_step_full_name(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи ФИО/организацию.")
+        return
+
+    await state.update_data(full_name=text)
+    await state.set_state(ProfileFill.role)
+    await message.answer("Статус в деле (например: должник / представитель / кредитор).")
+
+@dp.message(ProfileFill.role)
+async def profile_step_role(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи статус (должник/представитель/кредитор).")
+        return
+
+    await state.update_data(role=text)
+    await state.set_state(ProfileFill.address)
+    await message.answer("Адрес (для шапки документа). Можно '-' если не нужно.")
+
+@dp.message(ProfileFill.address)
+async def profile_step_address(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи адрес или '-'.")
+        return
+
+    await state.update_data(address=None if text == "-" else text)
+    await state.set_state(ProfileFill.phone)
+    await message.answer("Телефон. Можно '-' если не нужно.")
+
+@dp.message(ProfileFill.phone)
+async def profile_step_phone(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи телефон или '-'.")
+        return
+
+    await state.update_data(phone=None if text == "-" else text)
+    await state.set_state(ProfileFill.email)
+    await message.answer("Email. Можно '-' если не нужно.")
+@dp.message(ProfileFill.email)
+async def profile_step_email(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи email или '-'.")
+        return
+
+    data = await state.get_data()
+
+    upsert_profile(
+        uid,
+        full_name=data.get("full_name"),
+        role=data.get("role"),
+        address=data.get("address"),
+        phone=data.get("phone"),
+        email=None if text == "-" else text,
+    )
+
+    await state.clear()
+
+    await message.answer(
+        "✅ Профиль сохранён.\n\n"
+        "Теперь эти данные будут автоматически подставляться в документы.\n"
+        "Можешь открыть «👤 Мой профиль», чтобы проверить."
+    )
 
 @dp.message(CaseCreate.court)
 async def case_step_court(message: Message, state: FSMContext):
@@ -723,11 +935,7 @@ async def case_open(call: CallbackQuery):
         await call.answer()
         return
 
-    (
-        cid, code_name, case_number, court,
-        judge, fin_manager, stage, notes,
-        created_at, updated_at
-    ) = row
+    (cid, _owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
 
     text = (
         f"📌 Дело #{cid}\n"
