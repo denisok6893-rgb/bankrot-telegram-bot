@@ -12,6 +12,11 @@ from typing import Dict, Any, List, Tuple
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+from docx import Document
+from aiogram.types import FSInputFile
+from pathlib import Path
+from datetime import datetime
+from keyboards import docs_menu_ikb
 
 import aiohttp
 from dotenv import load_dotenv
@@ -26,6 +31,8 @@ class CaseCreate(StatesGroup):
     court = State()
     judge = State()
     fin_manager = State()
+class CaseEdit(StatesGroup):
+    value = State()
 
 # =========================
 # env
@@ -39,6 +46,32 @@ MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro")
 
 RAW_ALLOWED = (os.getenv("ALLOWED_USERS") or "").strip()
 RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()
+GENERATED_DIR = Path("/root/bankrot_bot/generated")
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+def build_online_hearing_docx(case_row: tuple) -> Path:
+    """
+    case_row = (id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at)
+    """
+    cid, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
+
+    doc = Document()
+    doc.add_paragraph("ХОДАТАЙСТВО")
+    doc.add_paragraph("об участии в судебном заседании онлайн (ВКС)")
+    doc.add_paragraph("")
+    doc.add_paragraph(f"Дело: {case_number or '-'}")
+    doc.add_paragraph(f"Суд: {court or '-'}")
+    doc.add_paragraph(f"Судья: {judge or '-'}")
+    doc.add_paragraph("")
+    doc.add_paragraph("Прошу обеспечить участие в судебном заседании с использованием ВКС (онлайн).")
+    doc.add_paragraph("")
+    doc.add_paragraph("Дата: " + datetime.now().strftime("%d.%m.%Y"))
+    doc.add_paragraph("Подпись: ____________________")
+
+    fname = f"hodatajstvo_online_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    out_path = GENERATED_DIR / fname
+    doc.save(out_path)
+    return out_path
 
 DB_PATH = os.getenv("DB_PATH", "/root/bankrot_bot/bankrot.db")
 
@@ -158,6 +191,27 @@ def update_case_fields(
                AND owner_user_id = ?
             """,
             (case_number, court, judge, fin_manager, cid, owner_user_id),
+        )
+        con.commit()
+def update_case_meta(
+    owner_user_id: int,
+    cid: int,
+    *,
+    stage: str | None = None,
+    notes: str | None = None,
+) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            UPDATE cases
+               SET stage = COALESCE(?, stage),
+                   notes = COALESCE(?, notes),
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+               AND owner_user_id = ?
+            """,
+            (stage, notes, cid, owner_user_id),
         )
         con.commit()
 
@@ -376,7 +430,106 @@ async def clients_entry(message: Message):
 
 @dp.message(lambda m: m.text == "📝 Документы")
 async def docs_entry(message: Message):
-    await message.answer("Раздел «Документы». (Сделаем дальше)")
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+    await message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb())
+
+@dp.callback_query(lambda c: c.data == "docs:online:last")
+async def docs_online_last(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+    if not rows:
+        await call.message.answer("Нет дел. Сначала создай дело в «📂 Дела».")
+        await call.answer()
+        return
+
+    cid = rows[0][0]
+    case_row = get_case(uid, cid)
+    if not case_row:
+        await call.message.answer("Не нашёл дело для генерации.")
+        await call.answer()
+        return
+
+    path = build_online_hearing_docx(case_row)
+    await call.message.answer_document(FSInputFile(path), caption=f"Готово ✅ Ходатайство (онлайн) для дела #{cid}")
+    await call.answer()
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+@dp.callback_query(lambda c: c.data == "docs:choose_case")
+async def docs_choose_case(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+    if not rows:
+        await call.message.answer("Нет дел. Сначала создай дело в «📂 Дела».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        kb.button(text=f"📄 {code_name} (№ {num})", callback_data=f"docs:case:{cid}")
+    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.adjust(1)
+
+    await call.message.answer("Выбери дело для документа:", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("docs:case:"))
+async def docs_case_selected(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🧾 Ходатайство онлайн", callback_data=f"docs:online:{cid}")
+    kb.button(text="🔙 К списку дел", callback_data="docs:choose_case")
+    kb.adjust(1)
+
+    await call.message.answer(f"Дело #{cid} выбрано. Что сделать?", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("docs:online:"))
+async def docs_online_for_case(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    case_row = get_case(uid, cid)
+    if not case_row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    path = build_online_hearing_docx(case_row)
+    await call.message.answer_document(FSInputFile(path), caption=f"Готово ✅ Ходатайство (онлайн) для дела #{cid}")
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data == "docs:back_menu")
+async def docs_back_menu(call: CallbackQuery):
+    await call.message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb())
+    await call.answer()
 
 @dp.message(lambda m: m.text == "ℹ️ Помощь")
 async def help_entry(message: Message):
@@ -385,6 +538,26 @@ async def help_entry(message: Message):
 async def back_to_main(call: CallbackQuery):
     await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
     await call.answer()
+@dp.message(Command("doc_test"))
+async def doc_test(message: Message):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    rows = list_cases(uid)
+    if not rows:
+        await message.answer("Нет дел. Сначала создай дело в «📂 Дела».")
+        return
+
+    # возьмём самое свежее дело
+    cid = rows[0][0]
+    case_row = get_case(uid, cid)
+    if not case_row:
+        await message.answer("Не нашёл дело для теста.")
+        return
+
+    path = build_online_hearing_docx(case_row)
+    await message.answer_document(FSInputFile(path), caption=f"Тестовый документ для дела #{cid}")
 
 
 @dp.callback_query(lambda c: c.data == "case:new")
@@ -398,6 +571,7 @@ async def case_new(call: CallbackQuery, state: FSMContext):
     await state.set_state(CaseCreate.code_name)
     await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
     await call.answer()
+
 @dp.message(CaseCreate.code_name)
 async def case_step_code_name(message: Message, state: FSMContext):
     uid = message.from_user.id
@@ -412,6 +586,7 @@ async def case_step_code_name(message: Message, state: FSMContext):
     await state.update_data(code_name=text)
     await state.set_state(CaseCreate.case_number)
     await message.answer("Теперь введи номер дела (можно '-' если пока нет).")
+
 @dp.message(CaseCreate.case_number)
 async def case_step_case_number(message: Message, state: FSMContext):
     uid = message.from_user.id
@@ -496,11 +671,168 @@ async def case_step_fin_manager(message: Message, state: FSMContext):
         f"ФУ: {fin_manager or '-'}"
     )
 
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 @dp.callback_query(lambda c: c.data == "case:list")
 async def case_list(call: CallbackQuery):
-    await call.message.answer("Список дел пока пуст. (Следующим шагом подключим хранение)")
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)  # берём последние 20 дел
+    if not rows:
+        await call.message.answer("Пока нет дел. Нажми «➕ Создать дело».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = ["📄 Ваши дела (последние 20):"]
+
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        st = stage or "-"
+        lines.append(f"#{cid} | {code_name} | № {num} | стадия: {st}")
+        kb.button(text=f"Открыть #{cid}", callback_data=f"case:open:{cid}")
+
+    kb.button(text="🔙 Назад", callback_data="back:cases")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
+@dp.callback_query(lambda c: c.data == "back:cases")
+async def back_to_cases(call: CallbackQuery):
+    await call.message.answer(
+        "Раздел «Дела». Выбери действие:",
+        reply_markup=cases_menu_ikb()
+    )
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("case:open:"))
+async def case_open(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    (
+        cid, code_name, case_number, court,
+        judge, fin_manager, stage, notes,
+        created_at, updated_at
+    ) = row
+
+    text = (
+        f"📌 Дело #{cid}\n"
+        f"Код: {code_name}\n"
+        f"Номер: {case_number or '-'}\n"
+        f"Суд: {court or '-'}\n"
+        f"Судья: {judge or '-'}\n"
+        f"ФУ: {fin_manager or '-'}\n"
+        f"Стадия: {stage or '-'}\n"
+        f"Заметки: {notes or '-'}\n"
+        f"Создано: {created_at}\n"
+        f"Обновлено: {updated_at}"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{cid}:case_number")
+    kb.button(text="✏️ Суд", callback_data=f"case:edit:{cid}:court")
+    kb.button(text="✏️ Судья", callback_data=f"case:edit:{cid}:judge")
+    kb.button(text="✏️ ФУ", callback_data=f"case:edit:{cid}:fin_manager")
+    kb.button(text="✏️ Стадия", callback_data=f"case:edit:{cid}:stage")
+    kb.button(text="🗒 Заметки", callback_data=f"case:edit:{cid}:notes")
+    kb.button(text="🔙 К списку дел", callback_data="case:list")
+    kb.adjust(2, 2, 2, 1)
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+    await call.answer()
+@dp.callback_query(lambda c: c.data.startswith("case:edit:"))
+async def case_edit_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, field = call.data.split(":")
+    cid = int(cid_str)
+
+    # проверим, что дело существует и твоё
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.update_data(edit_cid=cid, edit_field=field)
+    await state.set_state(CaseEdit.value)
+
+    field_titles = {
+        "case_number": "номер дела",
+        "court": "суд",
+        "judge": "судью",
+        "fin_manager": "финансового управляющего",
+        "stage": "стадию",
+        "notes": "заметки",
+    }
+    title = field_titles.get(field, field)
+
+    await call.message.answer(f"Введи новое значение для «{title}».\nЕсли нужно очистить поле — отправь `-`.")
+    await call.answer()
+@dp.message(CaseEdit.value)
+async def case_edit_apply(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    data = await state.get_data()
+    cid = data.get("edit_cid")
+    field = data.get("edit_field")
+
+    if not cid or not field:
+        await state.clear()
+        await message.answer("Что-то пошло не так. Начни заново через карточку дела.")
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пусто. Введи значение или '-' чтобы очистить.")
+        return
+
+    value = None if text == "-" else text
+
+    if field in ("case_number", "court", "judge", "fin_manager"):
+        update_case_fields(
+            uid,
+            cid,
+            case_number=value if field == "case_number" else None,
+            court=value if field == "court" else None,
+            judge=value if field == "judge" else None,
+            fin_manager=value if field == "fin_manager" else None,
+        )
+    elif field in ("stage", "notes"):
+        update_case_meta(
+            uid,
+            cid,
+            stage=value if field == "stage" else None,
+            notes=value if field == "notes" else None,
+        )
+    else:
+        await message.answer("Неизвестное поле для редактирования.")
+        await state.clear()
+        return
+
+    await state.clear()
+    await message.answer("✅ Обновлено. Нажми «🔙 К списку дел» или открой дело снова из списка.")
 
 @dp.message(Command("case_new"))
 async def case_new_cmd(message: Message):
@@ -513,7 +845,6 @@ async def case_new_cmd(message: Message):
         return
     cid = create_case(uid, parts[1])
     await message.answer(f"✅ Дело создано. ID: {cid}")
-
 
 @dp.message(Command("cases"))
 async def cases_cmd(message: Message):
