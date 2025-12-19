@@ -29,3 +29,7 @@ __pycache__/
 # local database
 bankrot.db
 generated/
+
+# sqlite temp files
+*.db-wal
+*.db-shm
