@@ -1,30 +1,23 @@
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.context import FSMContext
-from keyboards import main_menu_kb, cases_menu_ikb
-from aiogram.types import CallbackQuery
 import asyncio
+import json
 import os
+import sqlite3
 import time
 import uuid
-import json
-from typing import Dict, Any, List, Tuple
 from datetime import datetime
 from pathlib import Path
-import sqlite3
-from docx import Document
-from aiogram.types import FSInputFile
-from pathlib import Path
-from datetime import datetime
-from keyboards import docs_menu_ikb
+from typing import Any, Dict, List, Tuple
 
 import aiohttp
-from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from docx import Document
+from dotenv import load_dotenv
+from keyboards import cases_menu_ikb, docs_menu_ikb, main_menu_kb
 class CaseCreate(StatesGroup):
     code_name = State()
     case_number = State()
@@ -52,54 +45,147 @@ MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro")
 
 RAW_ALLOWED = (os.getenv("ALLOWED_USERS") or "").strip()
 RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()
-GENERATED_DIR = Path("/root/bankrot_bot/generated")
+GENERATED_DIR = Path("generated")
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
-def build_online_hearing_docx(case_row: tuple) -> Path:
+DOCUMENTS = {
+    "online_hearing": {
+        "title": "Ходатайство о ВКС",
+        "template": "templates/motions/online_hearing.docx",
+        "output_prefix": "online_hearing",
+    },
+    "bankruptcy_petition": {
+        "title": "Заявление о банкротстве",
+        "template": "templates/petitions/bankruptcy_petition.docx",
+        "output_prefix": "bankruptcy_petition",
+    },
+}
+
+
+def build_docx_from_template(template_path: str, owner_user_id: int, case_row) -> Path:
     """
-    case_row = (id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at)
+    Подготовка DOCX через шаблон
     """
-    cid, owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
+    cid, row_owner_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
 
-    doc = Document()
-       # Шапка: кому и от кого
-    doc.add_paragraph("В Арбитражный суд")
-    doc.add_paragraph(court or "[УКАЖИТЕ СУД]")
-    doc.add_paragraph("")
+    template_file = Path(template_path)
+    doc = Document(template_file)
 
-    prof = get_profile(owner_user_id)
-    if prof:
-        _, full_name, role, address, phone, email, *_ = prof
-        doc.add_paragraph("От: " + (full_name or "[ФИО/ОРГ]"))
-        if role:
-            doc.add_paragraph("Статус: " + role)
-        if address:
-            doc.add_paragraph("Адрес: " + address)
-        if phone:
-            doc.add_paragraph("Телефон: " + phone)
-        if email:
-            doc.add_paragraph("Email: " + email)
-    else:
-        doc.add_paragraph("От: [ПРОФИЛЬ НЕ ЗАПОЛНЕН]")
-
-    doc.add_paragraph("")
-
-    doc.add_paragraph("ХОДАТАЙСТВО")
-    doc.add_paragraph("об участии в судебном заседании онлайн (ВКС)")
-    doc.add_paragraph("")
     doc.add_paragraph(f"Дело: {case_number or '-'}")
+    doc.add_paragraph(f"Кодовое имя: {code_name}")
     doc.add_paragraph(f"Суд: {court or '-'}")
     doc.add_paragraph(f"Судья: {judge or '-'}")
-    doc.add_paragraph("")
-    doc.add_paragraph("Прошу обеспечить участие в судебном заседании с использованием ВКС (онлайн).")
-    doc.add_paragraph("")
-    doc.add_paragraph("Дата: " + datetime.now().strftime("%d.%m.%Y"))
-    doc.add_paragraph("Подпись: ____________________")
 
-    fname = f"hodatajstvo_online_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    fname = f"document_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
     out_path = GENERATED_DIR / fname
     doc.save(out_path)
+
     return out_path
+
+
+def _doc_has_placeholders(doc: Document) -> bool:
+    for paragraph in doc.paragraphs:
+        if "{{" in paragraph.text and "}}" in paragraph.text:
+            return True
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    if "{{" in paragraph.text and "}}" in paragraph.text:
+                        return True
+    return False
+
+
+def _replace_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
+    def replace_in_paragraph(paragraph):
+        for run in paragraph.runs:
+            for key, value in mapping.items():
+                placeholder = f"{{{{{key}}}}}"
+                if placeholder in run.text:
+                    run.text = run.text.replace(placeholder, str(value) if value is not None else "-")
+
+    def replace_in_table(table):
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    replace_in_paragraph(paragraph)
+                for nested_table in cell.tables:
+                    replace_in_table(nested_table)
+
+    for paragraph in doc.paragraphs:
+        replace_in_paragraph(paragraph)
+
+    for table in doc.tables:
+        replace_in_table(table)
+
+
+def build_bankruptcy_petition_doc(case_row: tuple) -> Path:
+    (
+        cid,
+        owner_user_id,
+        code_name,
+        case_number,
+        court,
+        judge,
+        fin_manager,
+        stage,
+        notes,
+        created_at,
+        updated_at,
+    ) = case_row
+
+    template_path = Path("templates/bankruptcy_petition_template.docx")
+    doc = Document(template_path) if template_path.exists() else Document()
+
+    mapping: Dict[str, Any] = {
+        "id": cid,
+        "owner_user_id": owner_user_id,
+        "code_name": code_name,
+        "case_number": case_number or "-",
+        "court": court or "-",
+        "judge": judge or "-",
+        "fin_manager": fin_manager or "-",
+        "stage": stage or "-",
+        "notes": notes or "-",
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+    if _doc_has_placeholders(doc):
+        _replace_placeholders(doc, mapping)
+    else:
+        doc.add_paragraph("")
+        p = doc.add_paragraph("Данные дела")
+        try:
+            p.style = "Heading 2"
+        except KeyError:
+            try:
+                p.style = "Заголовок 2"
+            except KeyError:
+                pass
+
+        doc.add_paragraph(f"ID дела: {cid}")
+        doc.add_paragraph(f"Кодовое имя: {code_name}")
+        doc.add_paragraph(f"Номер дела: {case_number or '-'}")
+        doc.add_paragraph(f"Суд: {court or '-'}")
+        doc.add_paragraph(f"Судья: {judge or '-'}")
+        doc.add_paragraph(f"Финансовый управляющий: {fin_manager or '-'}")
+        doc.add_paragraph(f"Стадия: {stage or '-'}")
+        doc.add_paragraph(f"Примечания: {notes or '-'}")
+
+        out_name = f"petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        out_path = GENERATED_DIR / out_name
+        doc.save(out_path)
+        return out_path
+
+
+async def _selected_case_id(state: FSMContext) -> int | None:
+    data = await state.get_data()
+    try:
+        return int(data.get("docs_case_id"))
+    except (TypeError, ValueError):
+        return None
 
 DB_PATH = os.getenv("DB_PATH", "/root/bankrot_bot/bankrot.db")
 
@@ -512,36 +598,13 @@ async def clients_entry(message: Message):
     await message.answer("Раздел «Клиенты». (Сделаем дальше)")
 
 @dp.message(lambda m: m.text == "📝 Документы")
-async def docs_entry(message: Message):
+async def docs_entry(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
         return
-    await message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb())
 
-@dp.callback_query(lambda c: c.data == "docs:online:last")
-async def docs_online_last(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    rows = list_cases(uid)
-    if not rows:
-        await call.message.answer("Нет дел. Сначала создай дело в «📂 Дела».")
-        await call.answer()
-        return
-
-    cid = rows[0][0]
-    case_row = get_case(uid, cid)
-    if not case_row:
-        await call.message.answer("Не нашёл дело для генерации.")
-        await call.answer()
-        return
-
-    path = build_online_hearing_docx(case_row)
-    await call.message.answer_document(FSInputFile(path), caption=f"Готово ✅ Ходатайство (онлайн) для дела #{cid}")
-    await call.answer()
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+    cid = await _selected_case_id(state)
+    await message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb(cid))
 
 @dp.callback_query(lambda c: c.data == "docs:choose_case")
 async def docs_choose_case(call: CallbackQuery):
@@ -609,7 +672,7 @@ async def profile_edit_start(call: CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(lambda c: c.data.startswith("docs:case:"))
-async def docs_case_selected(call: CallbackQuery):
+async def docs_case_selected(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -622,37 +685,94 @@ async def docs_case_selected(call: CallbackQuery):
         await call.answer()
         return
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🧾 Ходатайство онлайн", callback_data=f"docs:online:{cid}")
-    kb.button(text="🔙 К списку дел", callback_data="docs:choose_case")
-    kb.adjust(1)
-
-    await call.message.answer(f"Дело #{cid} выбрано. Что сделать?", reply_markup=kb.as_markup())
+    await state.update_data(docs_case_id=cid)
+    await call.message.answer(
+        f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇", reply_markup=docs_menu_ikb(cid)
+    )
     await call.answer()
 
 
-@dp.callback_query(lambda c: c.data.startswith("docs:online:"))
-async def docs_online_for_case(call: CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("docs:gen:"))
+async def docs_generate(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
         return
 
-    cid = int(call.data.split(":")[2])
+    parts = call.data.split(":", 2)
+    doc_key = parts[2] if len(parts) == 3 else ""
+    if doc_key != "online_hearing":
+        await call.message.answer("Документ не найден")
+        await call.answer()
+        return
+
+    cid = await _selected_case_id(state)
+    if cid is None:
+        await call.message.answer("Сначала выбери дело…")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
     case_row = get_case(uid, cid)
     if not case_row:
-        await call.message.answer("Дело не найдено.")
+        await state.update_data(docs_case_id=None)
+        await call.message.answer("Дело не найдено. Выбери его заново.")
+        await docs_choose_case(call)
         await call.answer()
         return
 
     path = build_online_hearing_docx(case_row)
-    await call.message.answer_document(FSInputFile(path), caption=f"Готово ✅ Ходатайство (онлайн) для дела #{cid}")
+    await call.message.answer_document(
+        FSInputFile(path),
+        caption=f"Готово ✅ Ходатайство о ВКС (дело #{cid})",
+    )
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("docs:petition:"))
+async def docs_petition(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":", 2)
+    cid_raw = parts[2] if len(parts) == 3 else ""
+    if not cid_raw or cid_raw == "select":
+        await call.message.answer("Сначала выбери дело…")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
+    try:
+        cid = int(cid_raw)
+    except (TypeError, ValueError):
+        await call.message.answer("Дело не найдено. Выбери его заново.")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
+    case_row = get_case(uid, cid)
+    if not case_row:
+        await state.update_data(docs_case_id=None)
+        await call.message.answer("Дело не найдено. Выбери его заново.")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
+    await state.update_data(docs_case_id=cid)
+    path = build_bankruptcy_petition_doc(case_row)
+    await call.message.answer_document(
+        FSInputFile(path),
+        caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
+    )
     await call.answer()
 
 
 @dp.callback_query(lambda c: c.data == "docs:back_menu")
-async def docs_back_menu(call: CallbackQuery):
-    await call.message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb())
+async def docs_back_menu(call: CallbackQuery, state: FSMContext):
+    cid = await _selected_case_id(state)
+    await call.message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb(cid))
     await call.answer()
 
 @dp.message(lambda m: m.text == "ℹ️ Помощь")
@@ -680,8 +800,13 @@ async def doc_test(message: Message):
         await message.answer("Не нашёл дело для теста.")
         return
 
-    path = build_online_hearing_docx(case_row)
-    await message.answer_document(FSInputFile(path), caption=f"Тестовый документ для дела #{cid}")
+    meta = DOCUMENTS["online_hearing"]
+    path = build_docx_from_template(
+        meta["template"], uid, case_row, meta["output_prefix"]
+    )
+    await message.answer_document(
+        FSInputFile(path), caption=f"Тестовый документ {meta['title']} для дела #{cid}"
+    )
 
 
 @dp.callback_query(lambda c: c.data == "case:new")
@@ -1105,11 +1230,28 @@ async def case_cmd(message: Message):
 @dp.callback_query()
 async def on_callback(call: CallbackQuery):
     uid = call.from_user.id
+    data = call.data or ""
+    flow = USER_FLOW.get(uid) or {}
+
+    if data.startswith(("docs:", "case:", "profile:", "back:")):
+        await call.answer()
+        return
+
     if not is_allowed(uid):
         await call.answer("Нет доступа", show_alert=True)
         return
 
-    data = call.data or ""
+    is_flow_callback = (
+        data == "export:word"
+        or data == "flow:cancel"
+        or data == "flow:motion"
+        or data == "flow:settlement"
+        or data.startswith("motion:court:")
+    )
+
+    if not is_flow_callback:
+        await call.answer()
+        return
 
     if data == "export:word":
         await call.answer()
@@ -1152,11 +1294,27 @@ async def on_callback(call: CallbackQuery):
         return
 
     await call.answer()
+    return
 
 
-# =========================
-# main text handler: ONLY non-commands
-# =========================
+@dp.message()
+async def main_text_router(message: Message, state: FSMContext):
+    # Если идёт FSM (создание дела и т.п.) — не мешаем
+    if await state.get_state() is not None:
+        return
+
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    if uid not in USER_FLOW:
+        await message.answer("Сначала выбери задачу через /start.")
+        return
+
+    # дальше — твоя старая логика USER_FLOW (motion / settlement)
+    flow = USER_FLOW[uid]
+    text = (message.text or "").strip()
+
     if flow.get("flow") == "settlement":
         step = int(flow.get("step", 0))
         if step >= len(SETTLEMENT_STEPS):
@@ -1196,20 +1354,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-@dp.message()
-async def main_text_router(message: Message, state: FSMContext):
-    # Если идёт FSM (создание дела и т.п.) — не мешаем
-    if await state.get_state() is not None:
-        return
-
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-
-    if uid not in USER_FLOW:
-        await message.answer("Сначала выбери задачу через /start.")
-        return
-
-    # дальше — твоя старая логика USER_FLOW (motion / settlement)
-    flow = USER_FLOW[uid]
-    text = (message.text or "").strip()
