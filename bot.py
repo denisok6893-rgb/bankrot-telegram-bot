@@ -62,24 +62,63 @@ DOCUMENTS = {
 }
 
 
-def build_docx_from_template(template_path: str, owner_user_id: int, case_row) -> Path:
+def build_docx_from_template(template_path: str, owner_user_id: int, case_row: tuple) -> Path:
     """
-    Подготовка DOCX через шаблон
+    Подготовка DOCX через шаблон:
+    - если в шаблоне есть {{placeholders}} → подставляем данные
+    - если нет → аккуратно дописываем базовую информацию
     """
-    cid, row_owner_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at = case_row
+    (
+        cid,
+        row_owner_id,
+        code_name,
+        case_number,
+        court,
+        judge,
+        fin_manager,
+        stage,
+        notes,
+        created_at,
+        updated_at,
+    ) = case_row
 
     template_file = Path(template_path)
     doc = Document(template_file)
 
-    doc.add_paragraph(f"Дело: {case_number or '-'}")
-    doc.add_paragraph(f"Кодовое имя: {code_name}")
-    doc.add_paragraph(f"Суд: {court or '-'}")
-    doc.add_paragraph(f"Судья: {judge or '-'}")
+    mapping = {
+        "case_id": cid,
+        "code_name": code_name,
+        "case_number": case_number or "-",
+        "court": court or "-",
+        "judge": judge or "-",
+        "fin_manager": fin_manager or "-",
+        "stage": stage or "-",
+        "notes": notes or "-",
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
 
-    fname = f"document_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-    out_path = GENERATED_DIR / fname
+    if _doc_has_placeholders(doc):
+        _replace_placeholders(doc, mapping)
+    else:
+        doc.add_paragraph("")
+        p = doc.add_paragraph("Данные дела")
+        try:
+            p.style = "Heading 2"
+        except KeyError:
+            try:
+                p.style = "Заголовок 2"
+            except KeyError:
+                pass
+
+        doc.add_paragraph(f"Дело: {case_number or '-'}")
+        doc.add_paragraph(f"Кодовое имя: {code_name}")
+        doc.add_paragraph(f"Суд: {court or '-'}")
+        doc.add_paragraph(f"Судья: {judge or '-'}")
+
+    out_name = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    out_path = GENERATED_DIR / out_name
     doc.save(out_path)
-
     return out_path
 
 
