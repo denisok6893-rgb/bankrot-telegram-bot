@@ -22,13 +22,19 @@ def cases_menu_ikb() -> InlineKeyboardMarkup:
 
 
 def docs_menu_ikb(cid: int | None = None) -> InlineKeyboardMarkup:
-    petition_callback = f"docs:petition:{cid}" if cid is not None else "docs:petition:select"
-
     kb = InlineKeyboardBuilder()
     kb.button(text="👤 Мой профиль", callback_data="profile:menu")
     kb.button(text="📂 Выбрать дело", callback_data="docs:choose_case")
+
+    # Документы по выбранному делу
     kb.button(text="🧾 Ходатайство о ВКС", callback_data="docs:gen:online_hearing")
-    kb.button(text="🧾 Заявление о банкротстве", callback_data=petition_callback)
+
+    # Заявление о банкротстве: если дело не выбрано — попросим выбрать
+    if cid is None:
+        kb.button(text="📄 Заявление о банкротстве", callback_data="docs:petition:select")
+    else:
+        kb.button(text="📄 Заявление о банкротстве", callback_data=f"docs:petition:{cid}")
+
     kb.button(text="🔙 Назад", callback_data="back:main")
     kb.adjust(1)
     return kb.as_markup()
