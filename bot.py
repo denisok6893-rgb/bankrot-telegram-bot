@@ -32,6 +32,8 @@ class ProfileFill(StatesGroup):
     email = State()
 class CaseEdit(StatesGroup):
     value = State()
+class CaseCardFill(StatesGroup):
+    waiting_value = State()
 
 # =========================
 # env
@@ -47,6 +49,7 @@ RAW_ALLOWED = (os.getenv("ALLOWED_USERS") or "").strip()
 RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()
 GENERATED_DIR = Path("generated")
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+BANKRUPTCY_TEMPLATE_PATH = Path("templates/petitions/bankruptcy_petition.docx")
 
 DOCUMENTS = {
     "online_hearing": {
@@ -116,10 +119,6 @@ def build_docx_from_template(template_path: str, owner_user_id: int, case_row: t
         doc.add_paragraph(f"Суд: {court or '-'}")
         doc.add_paragraph(f"Судья: {judge or '-'}")
 
-    out_name = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-    out_path = GENERATED_DIR / out_name
-    doc.save(out_path)
-    return out_path
 
 
 def _doc_has_placeholders(doc: Document) -> bool:
@@ -158,66 +157,351 @@ def _replace_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
     for table in doc.tables:
         replace_in_table(table)
 
+def validate_case_card(card: dict) -> list[str]:
+    """
+    Проверяет обязательные поля карточки дела
+    Возвращает список отсутствующих полей
+    """
+    required_fields = [
+        "court_name",
+        "court_address",
+        "debtor_full_name",
+        "debtor_last_name",
+        "debtor_first_name",
+        "debtor_gender",
+        "debtor_birth_date",
+        "debtor_address",
+        "passport_series",
+        "passport_number",
+        "passport_issued_by",
+        "passport_date",
+        "passport_code",
+        "total_debt_rubles",
+        "total_debt_kopeks",
+    ]
 
-def build_bankruptcy_petition_doc(case_row: tuple) -> Path:
-    (
-        cid,
-        owner_user_id,
-        code_name,
-        case_number,
-        court,
-        judge,
-        fin_manager,
-        stage,
-        notes,
-        created_at,
-        updated_at,
-    ) = case_row
+    missing = []
 
-    template_path = Path("templates/bankruptcy_petition_template.docx")
-    doc = Document(template_path) if template_path.exists() else Document()
+    for field in required_fields:
+        value = card.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(field)
 
-    mapping: Dict[str, Any] = {
-        "id": cid,
-        "owner_user_id": owner_user_id,
-        "code_name": code_name,
-        "case_number": case_number or "-",
-        "court": court or "-",
-        "judge": judge or "-",
-        "fin_manager": fin_manager or "-",
-        "stage": stage or "-",
-        "notes": notes or "-",
-        "created_at": created_at,
-        "updated_at": updated_at,
+    if card.get("debtor_gender") not in ("male", "female"):
+        if "debtor_gender" not in missing:
+            missing.append("debtor_gender")
+
+    return missing
+def build_gender_forms(gender: str | None) -> dict:
+    """
+    Возвращает слова в нужном роде для плейсхолдеров шаблона:
+    {{debtor_having_word}}, {{debtor_registered_word}}, {{debtor_living_word}},
+    {{debtor_not_registered_word}}, {{debtor_insolvent_word}}
+    """
+    g = (gender or "").strip().lower()
+    if g == "female":
+        return {
+            "debtor_having_word": "имеющая",
+            "debtor_registered_word": "зарегистрированная",
+            "debtor_living_word": "проживающая",
+            "debtor_not_registered_word": "не зарегистрирована",
+            "debtor_insolvent_word": "несостоятельной",
+        }
+    # по умолчанию male
+    return {
+        "debtor_having_word": "имеющий",
+        "debtor_registered_word": "зарегистрированный",
+        "debtor_living_word": "проживающий",
+        "debtor_not_registered_word": "не зарегистрирован",
+        "debtor_insolvent_word": "несостоятельным",
     }
 
-    if _doc_has_placeholders(doc):
-        _replace_placeholders(doc, mapping)
-    else:
-        doc.add_paragraph("")
-        p = doc.add_paragraph("Данные дела")
-        try:
-            p.style = "Heading 2"
-        except KeyError:
-            try:
-                p.style = "Заголовок 2"
-            except KeyError:
-                pass
 
-        doc.add_paragraph(f"ID дела: {cid}")
-        doc.add_paragraph(f"Кодовое имя: {code_name}")
-        doc.add_paragraph(f"Номер дела: {case_number or '-'}")
-        doc.add_paragraph(f"Суд: {court or '-'}")
-        doc.add_paragraph(f"Судья: {judge or '-'}")
-        doc.add_paragraph(f"Финансовый управляющий: {fin_manager or '-'}")
-        doc.add_paragraph(f"Стадия: {stage or '-'}")
-        doc.add_paragraph(f"Примечания: {notes or '-'}")
+def build_debtor_last_name_initials(card: dict) -> str:
+    """
+    Из 'Иванов Иван Иванович' делает 'Иванов И. И.'
+    Если ФИО пустое/неполное — возвращает как есть.
+    """
+    full_name = (card.get("debtor_full_name") or "").strip()
+    parts = [p for p in full_name.split() if p]
+    if len(parts) >= 2:
+        last = parts[0]
+        first_i = parts[1][0].upper() + "."
+        patro_i = (parts[2][0].upper() + ".") if len(parts) >= 3 and parts[2] else ""
+        return (last + " " + first_i + (" " + patro_i if patro_i else "")).strip()
+    return full_name
 
-        out_name = f"petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-        out_path = GENERATED_DIR / out_name
-        doc.save(out_path)
-        return out_path
 
+def build_family_status_block(card: dict) -> str:
+    """
+    Возвращает текстовый блок о семейном положении/детях для {{family_status_block}}.
+    Поля ожидаются: marital_status, spouse_full_name, has_minor_children, children_count,
+    marriage_certificate_number, marriage_certificate_date
+    """
+    marital_status = (card.get("marital_status") or "").strip()
+    spouse_full_name = (card.get("spouse_full_name") or "").strip()
+    has_minor_children = card.get("has_minor_children")
+    children_count = card.get("children_count")
+    cert_no = (card.get("marriage_certificate_number") or "").strip()
+    cert_date = (card.get("marriage_certificate_date") or "").strip()
+
+    lines: list[str] = []
+
+    if marital_status == "married":
+        line = "Состоит в браке"
+        if spouse_full_name:
+            line += f" с {spouse_full_name}"
+        line += "."
+        lines.append(line)
+
+        if cert_no:
+            cert_line = f"Свидетельство о заключении брака № {cert_no}"
+            if cert_date:
+                cert_line += f" от {cert_date}"
+            cert_line += "."
+            lines.append(cert_line)
+
+    elif marital_status == "single":
+        lines.append("В браке не состоит.")
+
+    if has_minor_children is True:
+        cnt = ""
+        if children_count not in (None, ""):
+            cnt = f" ({children_count} ребёнок(детей))"
+        lines.append(f"Имеет несовершеннолетних детей{cnt}.")
+    elif has_minor_children is False:
+        lines.append("Несовершеннолетних детей нет.")
+
+    return "\n".join(lines)
+
+
+def build_creditors_header_block(creditors: list[dict] | None) -> str:
+    return "Сведения о кредиторах:" if creditors else ""
+
+
+def build_creditors_block(creditors: list[dict] | None) -> str:
+    """
+    creditors = [
+      {"name": "...", "obligations":[{"amount_rubles":123,"amount_kopeks":45,"source":"ОКБ"}]}
+    ]
+    """
+    if not isinstance(creditors, list) or not creditors:
+        return ""
+
+    lines: list[str] = []
+    for i, c in enumerate(creditors, start=1):
+        name = str((c.get("name") or "Кредитор")).strip()
+        obs = c.get("obligations") or []
+        if not isinstance(obs, list):
+            obs = []
+
+        obs_txt: list[str] = []
+        for ob in obs:
+            if not isinstance(ob, dict):
+                continue
+            r = ob.get("amount_rubles")
+            k = ob.get("amount_kopeks")
+            src = (ob.get("source") or "").strip()
+
+            money_parts: list[str] = []
+            if r is not None:
+                money_parts.append(f"{int(r)} руб.")
+            if k is not None:
+                money_parts.append(f"{int(k):02d} коп.")
+            money = " ".join(money_parts).strip()
+
+            if money and src:
+                obs_txt.append(f"{money} ({src})")
+            elif money:
+                obs_txt.append(money)
+            elif src:
+                obs_txt.append(f"({src})")
+
+        if obs_txt:
+            lines.append(f"{i}) {name} — " + "; ".join(obs_txt))
+        else:
+            lines.append(f"{i}) {name}")
+
+    return "\n".join(lines)
+
+
+def build_vehicle_block(card: dict) -> str:
+    """
+    Если авто нет — 'Отсутствует'.
+    Если есть список vehicles или vehicle — печатаем списком.
+    """
+    vehicles: list[dict] = []
+
+    vlist = card.get("vehicles")
+    if isinstance(vlist, list):
+        vehicles.extend([v for v in vlist if isinstance(v, dict)])
+
+    one = card.get("vehicle")
+    if isinstance(one, dict):
+        vehicles.append(one)
+
+    if not vehicles:
+        return "Отсутствует"
+
+    lines: list[str] = []
+    for i, v in enumerate(vehicles, start=1):
+        brand_model = (v.get("brand_model") or "").strip()
+        plate = (v.get("plate_number") or "").strip()
+        vin = (v.get("vin") or "").strip()
+        year = (v.get("year") or "").strip()
+        parts = [p for p in [brand_model, plate, vin, year] if p]
+        desc = "; ".join(parts) if parts else "Автомобиль"
+        lines.append(f"{i}) {desc}")
+
+    return "\n".join(lines)
+
+
+def build_attachments_list(card: dict) -> str:
+    items: list[str] = []
+    if card.get("passport_series") and card.get("passport_number"):
+        items.append("Копия паспорта гражданина РФ.")
+    if card.get("debtor_inn"):
+        items.append("Копия ИНН.")
+    if card.get("debtor_snils"):
+        items.append("Копия СНИЛС.")
+    if card.get("creditors"):
+        items.append("Документы, подтверждающие задолженность перед кредиторами.")
+
+    if not items:
+        return ""
+    return "\n".join(f"{i}) {x}" for i, x in enumerate(items, start=1))
+
+
+def _doc_has_placeholders(doc: Document, placeholders) -> bool:
+    targets = list(placeholders)
+
+    def has_in_paragraphs(paragraphs) -> bool:
+        return any(any(t in p.text for t in targets) for p in paragraphs)
+
+    if has_in_paragraphs(doc.paragraphs):
+        return True
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if has_in_paragraphs(cell.paragraphs):
+                    return True
+    return False
+
+
+def _replace_placeholders(doc: Document, context: dict) -> None:
+    def replace_text(text: str) -> str:
+        for k, v in context.items():
+            if k in text:
+                text = text.replace(k, v)
+        return text
+
+    def process_paragraphs(paragraphs):
+        for p in paragraphs:
+            if any(k in p.text for k in context.keys()):
+                p.text = replace_text(p.text)
+
+    process_paragraphs(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                process_paragraphs(cell.paragraphs)
+
+
+def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
+    """
+    Генерация заявления о банкротстве по шаблону:
+    templates/petitions/bankruptcy_petition.docx
+
+    case_row: (id, owner_user_id, code_name, case_number, court, judge,
+               fin_manager, stage, notes, created_at, updated_at)
+    card: dict с данными карточки дела
+    """
+    cid = case_row[0]
+
+    template_path = Path("templates/petitions/bankruptcy_petition.docx")
+    doc = Document(template_path)
+
+    # Гендерные формы ({{debtor_having_word}} и т.п.)
+    gender_forms = build_gender_forms(card.get("debtor_gender"))
+
+    # Кредиторы
+    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+
+    # Номера/даты свидетельств (брак/по старым полям)
+    certificate_number = card.get("certificate_number") or card.get("marriage_certificate_number")
+    certificate_date = card.get("certificate_date") or card.get("marriage_certificate_date")
+
+    context = {
+        # Базовые поля дела / суда
+        "{{court_name}}": case_row[4] or "",
+        "{{financial_manager_info}}": case_row[6] or "",
+
+        # Адрес суда и пр. из карточки
+        "{{court_address}}": card.get("court_address") or "",
+
+        # Данные должника
+        "{{debtor_full_name}}": card.get("debtor_full_name") or "",
+        "{{debtor_last_name_initials}}": build_debtor_last_name_initials(card),
+        "{{debtor_address}}": card.get("debtor_address") or "",
+        "{{debtor_birth_date}}": card.get("debtor_birth_date") or "",
+        "{{debtor_inn}}": card.get("debtor_inn") or "",
+        "{{debtor_snils}}": card.get("debtor_snils") or "",
+        "{{debtor_phone_or_absent}}": card.get("debtor_phone") or "отсутствует",
+        "{{debtor_inn_or_absent}}": card.get("debtor_inn") or "отсутствует",
+        "{{debtor_snils_or_absent}}": card.get("debtor_snils") or "отсутствует",
+
+        # Паспортные данные
+        "{{passport_series}}": card.get("passport_series") or "",
+        "{{passport_number}}": card.get("passport_number") or "",
+        "{{passport_issued_by}}": card.get("passport_issued_by") or "",
+        "{{passport_date}}": card.get("passport_date") or "",
+        "{{passport_code}}": card.get("passport_code") or "",
+
+        # Семейное положение / дети
+        "{{family_status_block}}": build_family_status_block(card),
+
+        # Кредиторы
+        "{{creditors_header_block}}": build_creditors_header_block(creditors),
+        "{{creditors_block}}": build_creditors_block(creditors),
+
+        # Транспорт
+        "{{vehicle_block}}": build_vehicle_block(card),
+
+        # Деньги
+        "{{total_debt_rubles}}": str(card.get("total_debt_rubles") or ""),
+        "{{total_debt_kopeks}}": f"{int(card.get('total_debt_kopeks') or 0):02d}",
+
+        # Ходатайство о рассрочке депозита и др.
+        "{{deposit_deferral_request}}": card.get("deposit_deferral_request") or "",
+
+        # Приложения
+        "{{attachments_list}}": build_attachments_list(card),
+
+        # Свидетельства
+        "{{certificate_number}}": certificate_number or "",
+        "{{certificate_date}}": certificate_date or "",
+
+        # Текущая дата
+        "{{date}}": datetime.now().strftime("%d.%m.%Y"),
+    }
+
+    # Подмешиваем гендерные плейсхолдеры: {{debtor_having_word}} и т.п.
+    for key, value in gender_forms.items():
+        context[f"{{{{{key}}}}}"] = value
+
+    # Всё приводим к строке (None -> "")
+    string_context = {k: ("" if v is None else str(v)) for k, v in context.items()}
+
+    # Если в документе есть такие плейсхолдеры — заменяем
+    if _doc_has_placeholders(doc, string_context.keys()):
+        _replace_placeholders(doc, string_context)
+
+    # ✅ ВАЖНО: out_path создаём и возвращаем ВСЕГДА
+    fname = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    out_path = GENERATED_DIR / fname
+    doc.save(out_path)
+    return out_path
 
 async def _selected_case_id(state: FSMContext) -> int | None:
     data = await state.get_data()
@@ -278,6 +562,20 @@ def init_db() -> None:
         );
         """)
 
+        # ===== case_cards (карточка дела, JSON) =====
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS case_cards (
+            case_id INTEGER NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (case_id, owner_user_id)
+        );
+        """)
+
+        con.commit()
+
         # ===== profiles (для документов) =====
         con.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
@@ -336,6 +634,44 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
              (owner_user_id, cid),
         )
         return cur.fetchone()
+
+def get_case_card(owner_user_id: int, cid: int) -> dict | None:
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT data
+              FROM case_cards
+             WHERE owner_user_id = ?
+               AND case_id = ?
+            """,
+            (owner_user_id, cid),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+
+
+def upsert_case_card(owner_user_id: int, cid: int, data: dict) -> None:
+    now = _now()
+    payload = json.dumps(data, ensure_ascii=False)
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            INSERT INTO case_cards (case_id, owner_user_id, data, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(case_id, owner_user_id) DO UPDATE SET
+                data = excluded.data,
+                updated_at = excluded.updated_at
+            """,
+            (cid, owner_user_id, payload, now, now),
+        )
+        con.commit()
 
 def get_profile(owner_user_id: int) -> tuple | None:
     with sqlite3.connect(DB_PATH) as con:
@@ -800,7 +1136,25 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(docs_case_id=cid)
-    path = build_bankruptcy_petition_doc(case_row)
+    card = get_case_card(uid, cid)
+    if not card:
+        await call.message.answer(
+            "Карточка дела ещё не заполнена.\n"
+            "Добавь данные дела (пол, паспорт, долги и т.д.)."
+        )
+        await call.answer()
+        return
+
+    missing = validate_case_card(card)
+    if missing:
+        await call.message.answer(
+            "Не хватает обязательных данных в карточке дела:\n"
+            + "\n".join(f"- {m}" for m in missing)
+        )
+        await call.answer()
+        return
+
+    path = build_bankruptcy_petition_doc(case_row, card)
     await call.message.answer_document(
         FSInputFile(path),
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
@@ -821,6 +1175,56 @@ async def help_entry(message: Message):
 async def back_to_main(call: CallbackQuery):
     await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
     await call.answer()
+
+@dp.message(Command("card_set"))
+async def card_set(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    cid = await _selected_case_id(state)
+    if cid is None:
+        await message.answer("Сначала выбери дело через «📂 Дела», затем повтори /card_set и отправь JSON.")
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Пришли команду так:\n"
+            "/card_set {JSON}\n\n"
+            "Пример:\n"
+            "/card_set {\"debtor_gender\":\"male\"}"
+        )
+        return
+
+    raw_json = parts[1].strip()
+    try:
+        data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            raise ValueError("JSON должен быть объектом (словарём)")
+    except Exception as e:
+        await message.answer(f"Ошибка JSON: {e}\n\nПроверь кавычки и запятые и пришли снова.")
+        return
+
+    # Сохраняем карточку
+    upsert_case_card(uid, cid, data)
+
+    missing = validate_case_card(data)
+    if missing:
+        await message.answer(
+            "Карточка сохранена ✅\n"
+            "Но пока не хватает обязательных полей:\n"
+            + "\n".join(f"- {m}" for m in missing)
+        )
+        return
+
+    await message.answer(
+        "Карточка сохранена ✅\n"
+        "Все обязательные поля заполнены. Теперь можно нажать «📄 Заявление о банкротстве»."
+    )
+
+
 @dp.message(Command("doc_test"))
 async def doc_test(message: Message):
     uid = message.from_user.id
@@ -1070,6 +1474,10 @@ async def case_list(call: CallbackQuery):
         st = stage or "-"
         lines.append(f"#{cid} | {code_name} | № {num} | стадия: {st}")
         kb.button(text=f"Открыть #{cid}", callback_data=f"case:open:{cid}")
+        kb.button(
+            text="🗂 Заполнить карточку дела",
+            callback_data=f"card:fill:{cid}"
+        )
 
     kb.button(text="🔙 Назад", callback_data="back:cases")
     kb.adjust(1)
