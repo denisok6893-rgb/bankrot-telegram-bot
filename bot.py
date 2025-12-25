@@ -17,7 +17,19 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from dotenv import load_dotenv
-from keyboards import cases_menu_ikb, docs_menu_ikb, main_menu_kb
+from keyboards import (
+    main_menu_kb,
+    start_ikb,
+    home_ikb,
+    profile_ikb,
+    cases_list_ikb,
+    case_card_ikb,
+    docs_home_ikb,
+    help_ikb,
+    docs_menu_ikb,
+    case_files_ikb,
+)
+
 class CaseCreate(StatesGroup):
     code_name = State()
     case_number = State()
@@ -407,101 +419,134 @@ def _replace_placeholders(doc: Document, context: dict) -> None:
             for cell in row.cells:
                 process_paragraphs(cell.paragraphs)
 
+def _set_paragraph_text_keep_style(paragraph, new_text: str) -> None:
+    """
+    Надёжная замена текста в параграфе: плейсхолдеры могут быть разорваны по runs.
+    Сохраняем стиль параграфа, но runs пересоздаём.
+    """
+    if paragraph.runs:
+        for r in paragraph.runs:
+            r.text = ""
+    paragraph.add_run(new_text)
+
+
+def _replace_placeholders_strong(doc: Document, mapping: Dict[str, Any]) -> None:
+    """
+    Замена плейсхолдеров формата {{key}} по полному тексту параграфов и ячеек таблиц.
+    mapping: ключи БЕЗ фигурных скобок, например: {"court_name": "..." }
+    """
+    def apply_to_paragraph(p):
+        text = p.text
+        if not text or "{{" not in text:
+            return
+        changed = False
+        for k, v in mapping.items():
+            placeholder = f"{{{{{k}}}}}"
+            if placeholder in text:
+                text = text.replace(placeholder, "" if v is None else str(v))
+                changed = True
+        if changed:
+            _set_paragraph_text_keep_style(p, text)
+
+    for p in doc.paragraphs:
+        apply_to_paragraph(p)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    apply_to_paragraph(p)
+                for nested in cell.tables:
+                    # рекурсивно для вложенных таблиц
+                    for nrow in nested.rows:
+                        for ncell in nrow.cells:
+                            for np in ncell.paragraphs:
+                                apply_to_paragraph(np)
+
 
 def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
-    Генерация заявления о банкротстве по шаблону:
-    templates/petitions/bankruptcy_petition.docx
-
-    case_row: (id, owner_user_id, code_name, case_number, court, judge,
-               fin_manager, stage, notes, created_at, updated_at)
-    card: dict с данными карточки дела
+    Генерация заявления о банкротстве по шаблону.
+    Надёжная подстановка {{placeholders}} даже если Word разорвал их по runs.
     """
     cid = case_row[0]
 
     template_path = Path("templates/petitions/bankruptcy_petition.docx")
     doc = Document(template_path)
 
-    # Гендерные формы ({{debtor_having_word}} и т.п.)
     gender_forms = build_gender_forms(card.get("debtor_gender"))
-
-    # Кредиторы
     creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
 
-    # Номера/даты свидетельств (брак/по старым полям)
     certificate_number = card.get("certificate_number") or card.get("marriage_certificate_number")
     certificate_date = card.get("certificate_date") or card.get("marriage_certificate_date")
 
-    context = {
+    mapping = {
         # Базовые поля дела / суда
-        "{{court_name}}": case_row[4] or "",
-        "{{financial_manager_info}}": case_row[6] or "",
+        "court_name": case_row[4] or "",
+        "financial_manager_info": case_row[6] or "",
 
-        # Адрес суда и пр. из карточки
-        "{{court_address}}": card.get("court_address") or "",
+        # Адрес суда из карточки
+        "court_address": card.get("court_address") or "",
 
         # Данные должника
-        "{{debtor_full_name}}": card.get("debtor_full_name") or "",
-        "{{debtor_last_name_initials}}": build_debtor_last_name_initials(card),
-        "{{debtor_address}}": card.get("debtor_address") or "",
-        "{{debtor_birth_date}}": card.get("debtor_birth_date") or "",
-        "{{debtor_inn}}": card.get("debtor_inn") or "",
-        "{{debtor_snils}}": card.get("debtor_snils") or "",
-        "{{debtor_phone_or_absent}}": card.get("debtor_phone") or "отсутствует",
-        "{{debtor_inn_or_absent}}": card.get("debtor_inn") or "отсутствует",
-        "{{debtor_snils_or_absent}}": card.get("debtor_snils") or "отсутствует",
+        "debtor_full_name": card.get("debtor_full_name") or "",
+        "debtor_last_name_initials": build_debtor_last_name_initials(card),
+        "debtor_address": card.get("debtor_address") or "",
+        "debtor_birth_date": card.get("debtor_birth_date") or "",
+        "debtor_inn": card.get("debtor_inn") or "",
+        "debtor_snils": card.get("debtor_snils") or "",
+        "debtor_phone_or_absent": card.get("debtor_phone") or "отсутствует",
+        "debtor_inn_or_absent": card.get("debtor_inn") or "отсутствует",
+        "debtor_snils_or_absent": card.get("debtor_snils") or "отсутствует",
 
-        # Паспортные данные
-        "{{passport_series}}": card.get("passport_series") or "",
-        "{{passport_number}}": card.get("passport_number") or "",
-        "{{passport_issued_by}}": card.get("passport_issued_by") or "",
-        "{{passport_date}}": card.get("passport_date") or "",
-        "{{passport_code}}": card.get("passport_code") or "",
+        # Паспорт
+        "passport_series": card.get("passport_series") or "",
+        "passport_number": card.get("passport_number") or "",
+        "passport_issued_by": card.get("passport_issued_by") or "",
+        "passport_date": card.get("passport_date") or "",
+        "passport_code": card.get("passport_code") or "",
 
-        # Семейное положение / дети
-        "{{family_status_block}}": build_family_status_block(card),
+        # Семья / дети
+        "family_status_block": build_family_status_block(card),
 
         # Кредиторы
-        "{{creditors_header_block}}": build_creditors_header_block(creditors),
-        "{{creditors_block}}": build_creditors_block(creditors),
+        "creditors_header_block": build_creditors_header_block(creditors),
+        "creditors_block": build_creditors_block(creditors),
 
         # Транспорт
-        "{{vehicle_block}}": build_vehicle_block(card),
+        "vehicle_block": build_vehicle_block(card),
 
-        # Деньги
-        "{{total_debt_rubles}}": str(card.get("total_debt_rubles") or ""),
-        "{{total_debt_kopeks}}": f"{int(card.get('total_debt_kopeks') or 0):02d}",
+        # Сумма долга
+        "total_debt_rubles": str(card.get("total_debt_rubles") or ""),
+        "total_debt_kopeks": f"{int(card.get('total_debt_kopeks') or 0):02d}",
 
-        # Ходатайство о рассрочке депозита и др.
-        "{{deposit_deferral_request}}": card.get("deposit_deferral_request") or "",
+        # Депозит/рассрочка
+        "deposit_deferral_request": card.get("deposit_deferral_request") or "",
 
         # Приложения
-        "{{attachments_list}}": build_attachments_list(card),
+        "attachments_list": build_attachments_list(card),
 
         # Свидетельства
-        "{{certificate_number}}": certificate_number or "",
-        "{{certificate_date}}": certificate_date or "",
+        "certificate_number": certificate_number or "",
+        "certificate_date": certificate_date or "",
 
         # Текущая дата
-        "{{date}}": datetime.now().strftime("%d.%m.%Y"),
+        "date": datetime.now().strftime("%d.%m.%Y"),
     }
 
-    # Подмешиваем гендерные плейсхолдеры: {{debtor_having_word}} и т.п.
-    for key, value in gender_forms.items():
-        context[f"{{{{{key}}}}}"] = value
+    # гендерные формы: debtor_having_word, debtor_asked_word и т.п.
+    for k, v in gender_forms.items():
+        mapping[k] = v
 
-    # Всё приводим к строке (None -> "")
-    string_context = {k: ("" if v is None else str(v)) for k, v in context.items()}
+    _replace_placeholders_strong(doc, mapping)
 
-    # Если в документе есть такие плейсхолдеры — заменяем
-    if _doc_has_placeholders(doc, string_context.keys()):
-        _replace_placeholders(doc, string_context)
-
-    # ✅ ВАЖНО: out_path создаём и возвращаем ВСЕГДА
     fname = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-    out_path = GENERATED_DIR / fname
+    case_dir = GENERATED_DIR / "cases" / str(cid)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    out_path = case_dir / fname
     doc.save(out_path)
     return out_path
+
 
 async def _selected_case_id(state: FSMContext) -> int | None:
     data = await state.get_data()
@@ -952,37 +997,72 @@ def build_settlement_user_text(ans: Dict[str, str]) -> str:
         "Сформируй проект мирового соглашения."
     )
 
+# =========================
+# menu (new)
+# =========================
 
-# =========================
-# commands
-# =========================
 @dp.message(CommandStart())
-async def start_cmd(message: Message):
+async def cmd_start(message: Message):
     uid = message.from_user.id
     if not is_allowed(uid):
         return
     cancel_flow(uid)
-    await message.answer("Выбери задачу 👇", reply_markup=main_menu_kb())
-@dp.message(lambda m: m.text == "📂 Дела")
-async def cases_entry(message: Message):
-    await message.answer("Раздел «Дела». Выбери действие:", reply_markup=cases_menu_ikb())
+
+    await message.answer(
+        "Бот запущен. Нажмите «Старт», чтобы открыть меню.",
+        reply_markup=main_menu_kb(),
+    )
+    await message.answer("▶️ Запуск:", reply_markup=start_ikb())
 
 
-@dp.message(lambda m: m.text == "🧑‍⚖️ Клиенты")
-async def clients_entry(message: Message):
-    await message.answer("Раздел «Клиенты». (Сделаем дальше)")
-
-@dp.message(lambda m: m.text == "📝 Документы")
-async def docs_entry(message: Message, state: FSMContext):
-    uid = message.from_user.id
+@dp.callback_query(F.data == "menu:home")
+async def menu_home(call: CallbackQuery):
+    uid = call.from_user.id
     if not is_allowed(uid):
+        await call.answer()
         return
+    await call.message.answer("Главное меню:", reply_markup=home_ikb())
+    await call.answer()
 
-    cid = await _selected_case_id(state)
-    await message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb(cid))
 
-@dp.callback_query(lambda c: c.data == "docs:choose_case")
-async def docs_choose_case(call: CallbackQuery):
+@dp.callback_query(F.data == "menu:profile")
+async def menu_profile(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("👤 Мой профиль:", reply_markup=profile_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "menu:docs")
+async def menu_docs(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("📄 Документы (общий раздел):", reply_markup=docs_home_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "menu:help")
+async def menu_help(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "❓ Помощь:\n"
+        "1) Главное меню → «Мой профиль»\n"
+        "2) В профиле → «Дела»\n"
+        "3) Внутри дела: «Документы по делу» или «Редактирование карточки»",
+        reply_markup=help_ikb(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data == "profile:cases")
+async def profile_cases(call: CallbackQuery):
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -990,19 +1070,195 @@ async def docs_choose_case(call: CallbackQuery):
 
     rows = list_cases(uid)
     if not rows:
-        await call.message.answer("Нет дел. Сначала создай дело в «📂 Дела».")
+        await call.message.answer("Пока нет дел.", reply_markup=profile_ikb())
         await call.answer()
         return
 
+    await call.message.answer("📂 Ваши дела:", reply_markup=cases_list_ikb(rows))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("case:open:"))
+async def case_open(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+    await call.message.answer(
+        f"🗂 Карточка дела #{case_id}\nВыберите действие:",
+        reply_markup=case_card_ikb(case_id),
+    )
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("case:docs:"))
+async def case_docs(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    # сохраним выбранное дело (на будущее)
+    await state.update_data(docs_case_id=case_id)
+
+    # показываем уже созданные файлы по делу
+    pattern = f"_case_{case_id}_"
+    files = sorted(
+        [p.name for p in GENERATED_DIR.glob("*.docx") if pattern in p.name],
+        reverse=True,
+    )
+
+    # клавиатура: сначала генерация, потом архив
     kb = InlineKeyboardBuilder()
-    for (cid, code_name, case_number, stage, updated_at) in rows:
-        num = case_number or "-"
-        kb.button(text=f"📄 {code_name} (№ {num})", callback_data=f"docs:case:{cid}")
-    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.button(text="🧾 Сформировать заявление о банкротстве (новое)", callback_data=f"case:gen:{case_id}:petition")
+    kb.button(text="📹 Сформировать ходатайство о ВКС (новое)", callback_data=f"case:gen:{case_id}:online")
+    kb.button(text="🔙 Назад", callback_data=f"case:open:{case_id}")
+
+    if files:
+        kb.button(text="—— Архив документов ——", callback_data="noop")
+        for fn in files[:20]:
+            kb.button(text=f"📎 {fn}", callback_data=f"case:file:{case_id}:{fn}")
+
     kb.adjust(1)
 
-    await call.message.answer("Выбери дело для документа:", reply_markup=kb.as_markup())
+    if not files:
+        await call.message.answer(
+            f"📎 Документы по делу #{case_id} пока отсутствуют.\n"
+            "Нажми кнопку ниже, чтобы сформировать новый документ (он сохранится в архив).",
+            reply_markup=kb.as_markup(),
+        )
+        await call.answer()
+        return
+
+    await call.message.answer(
+        f"📎 Документы по делу #{case_id} (последние сверху):",
+        reply_markup=kb.as_markup(),
+    )
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    # формат: case:file:<case_id>:<filename>
+    parts = call.data.split(":", 3)
+    if len(parts) != 4:
+        await call.answer("Некорректная команда")
+        return
+
+    case_id = int(parts[2])
+    filename = parts[3]
+
+    path = GENERATED_DIR / filename
+    if not path.exists():
+        await call.message.answer("Файл не найден (возможно, удалён).")
+        await call.answer()
+        return
+
+    await call.message.answer_document(
+        FSInputFile(path),
+        caption=f"📄 Документ по делу #{case_id}",
+    )
+    await call.answer()
+
+@dp.callback_query(F.data == "noop")
+async def noop(call: CallbackQuery):
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("case:gen:"))
+async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
+    """
+    Генерация нового документа прямо из "Документы по делу"
+    callback_data: case:gen:<case_id>:petition|online
+    """
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) != 4:
+        await call.message.answer("Некорректная команда.")
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    doc_kind = parts[3]
+
+    case_row = get_case(uid, case_id)
+    if not case_row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    # сохраняем выбранное дело в state
+    await state.update_data(docs_case_id=case_id)
+
+    if doc_kind == "petition":
+        card = get_case_card(uid, case_id)
+        if not card:
+            await call.message.answer("Карточка дела ещё не заполнена. Сначала заполни карточку дела.")
+            await call.answer()
+            return
+
+        missing = validate_case_card(card)
+        if missing:
+            await call.message.answer(
+                "Не хватает обязательных данных в карточке дела:\n"
+                + "\n".join(f"- {m}" for m in missing)
+            )
+            await call.answer()
+            return
+
+        path = build_bankruptcy_petition_doc(case_row, card)
+        await call.message.answer_document(
+            FSInputFile(path),
+            caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
+        )
+
+    elif doc_kind == "online":
+        path = build_online_hearing_docx(case_row)
+        await call.message.answer_document(
+            FSInputFile(path),
+            caption=f"Готово ✅ Ходатайство о ВКС (дело #{case_id})",
+        )
+    else:
+        await call.message.answer("Неизвестный тип документа.")
+        await call.answer()
+        return
+
+    # после генерации — сразу показать обновлённый архив
+    fake = type("X", (), {})()
+    fake.from_user = call.from_user
+    fake.data = f"case:docs:{case_id}"
+    fake.message = call.message
+
+    await case_docs(fake, state)
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("case:edit:"))
+async def case_edit_menu(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+    await call.message.answer(
+        f"✏️ Редактирование карточки дела #{case_id} (подключим следующим шагом).",
+        reply_markup=case_card_ikb(case_id),
+    )
+    await call.answer()
+
+
 @dp.callback_query(lambda c: c.data == "profile:menu")
 async def profile_menu(call: CallbackQuery):
     uid = call.from_user.id
@@ -1103,7 +1359,6 @@ async def docs_generate(call: CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-
 @dp.callback_query(lambda c: c.data.startswith("docs:petition:"))
 async def docs_petition(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
@@ -1112,17 +1367,12 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         return
 
     parts = call.data.split(":", 2)
-    cid_raw = parts[2] if len(parts) == 3 else ""
-    if not cid_raw or cid_raw == "select":
-        await call.message.answer("Сначала выбери дело…")
-        await docs_choose_case(call)
-        await call.answer()
-        return
+    doc_key = parts[2] if len(parts) == 3 else ""
 
-    try:
-        cid = int(cid_raw)
-    except (TypeError, ValueError):
-        await call.message.answer("Дело не найдено. Выбери его заново.")
+    # Берём выбранное дело из state (мы его сохраняем в case:docs:<id>)
+    cid = await _selected_case_id(state)
+    if cid is None:
+        await call.message.answer("Сначала выбери дело…")
         await docs_choose_case(call)
         await call.answer()
         return
@@ -1135,7 +1385,6 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    await state.update_data(docs_case_id=cid)
     card = get_case_card(uid, cid)
     if not card:
         await call.message.answer(
@@ -1151,6 +1400,11 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
             "Не хватает обязательных данных в карточке дела:\n"
             + "\n".join(f"- {m}" for m in missing)
         )
+        await call.answer()
+        return
+
+    if doc_key != "bankruptcy_petition":
+        await call.message.answer("Документ не найден")
         await call.answer()
         return
 
