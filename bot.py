@@ -2745,8 +2745,11 @@ async def case_card_value_set(message: Message, state: FSMContext):
 
     await state.clear()
     filled, total = _card_completion_status(card)
-    await message.answer(f"✅ Сохранено. Заполнено {filled}/{total}.")
-    await send_card_fill_menu(message, uid, int(cid))
+    await message.answer(
+        f"✅ Сохранено. Заполнено {filled}/{total}.",
+        reply_markup=case_card_ikb(int(cid)),
+    )
+
 @dp.callback_query(lambda c: c.data.startswith("case:edit:"))
 async def case_edit_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
