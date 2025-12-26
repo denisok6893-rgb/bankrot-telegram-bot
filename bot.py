@@ -1432,17 +1432,18 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(F.data.startswith("case:edit:"))
-async def case_edit_menu(call: CallbackQuery):
+async def case_edit_menu(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
         return
 
     case_id = int(call.data.split(":")[-1])
-    await call.message.answer(
-        f"✏️ Редактирование карточки дела #{case_id} (подключим следующим шагом).",
-        reply_markup=case_card_ikb(case_id),
-    )
+
+    # Открываем реальное меню карточки дела
+    await state.clear()
+    await state.update_data(card_case_id=case_id)
+    await send_card_fill_menu(call.message, uid, case_id)
     await call.answer()
 
 
