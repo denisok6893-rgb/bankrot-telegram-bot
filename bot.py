@@ -2568,8 +2568,34 @@ async def card_fill_start(call: CallbackQuery, state: FSMContext):
     cid = int(cid_str)
 
     await state.clear()
-    await state.update_data(card_case_id=cid)
-    await send_card_fill_menu(call.message, uid, cid)
+
+    # Берём текущую карточку и находим первое незаполненное поле
+    card = get_case_card(uid, cid) or {}
+    next_field = None
+    for key, _meta in CASE_CARD_FIELDS:
+        val = card.get(key)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            next_field = key
+            break
+
+    # Если всё заполнено — просто покажем меню карточки
+    if not next_field:
+        await state.update_data(card_case_id=cid)
+        await send_card_fill_menu(call.message, uid, cid)
+        await call.answer()
+        return
+
+    # Иначе — сразу стартуем ввод первого незаполненного поля
+    await state.update_data(card_case_id=cid, card_field_key=next_field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    filled, total = _card_completion_status(card)
+    prompt = CASE_CARD_FIELD_META[next_field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
+    await call.message.answer(
+        f"✍️ Заполняем карточку дела #{cid}. Заполнено {filled}/{total}.\n"
+        f"Сейчас: {CASE_CARD_FIELD_META[next_field]['title']}.\n"
+        f"{prompt}"
+    )
     await call.answer()
 
 
