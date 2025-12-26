@@ -2147,7 +2147,7 @@ async def case_card_field(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@dp.message(CaseCardFill.waiting_value)
+# DISABLED: legacy handler (conflicts with case_card_value_set)
 async def case_card_value(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2285,9 +2285,8 @@ async def case_card_field(call: CallbackQuery, state: FSMContext, fields: list[t
     )
     await call.answer()
 
-
-@dp.message(CaseCardFill.waiting_value)
-async def case_card_value(message: Message, state: FSMContext, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
+# DISABLED: legacy handler (conflicts with case_card_value_set)
+async def case_card_value_legacy(message: Message, state: FSMContext, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
     uid = message.from_user.id
     if not is_allowed(uid):
         return
