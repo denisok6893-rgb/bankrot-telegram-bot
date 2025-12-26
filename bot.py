@@ -1281,12 +1281,14 @@ async def case_docs(call: CallbackQuery, state: FSMContext):
     # сохраним выбранное дело (на будущее)
     await state.update_data(docs_case_id=case_id)
 
-    # показываем уже созданные файлы по делу
-    pattern = f"_case_{case_id}_"
-    files = sorted(
-        [p.name for p in GENERATED_DIR.glob("*.docx") if pattern in p.name],
-        reverse=True,
-    )
+    # показываем уже созданные файлы по делу (ТОЛЬКО новая структура)
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    files = []
+    if case_dir.is_dir():
+        files = sorted(
+            [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+            reverse=True,
+        )
 
     # клавиатура: сначала генерация, потом архив
     kb = InlineKeyboardBuilder()
@@ -1332,6 +1334,14 @@ async def case_file_send(call: CallbackQuery):
 
     case_id = int(parts[2])
     filename = parts[3]
+
+    if ("/" in filename) or ("\\" in filename) or (".." in filename):
+        await call.message.answer("Некорректное имя файла.")
+        await call.answer()
+        return
+
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    path = case_dir / filename
 
     path = GENERATED_DIR / filename
     if not path.exists():
