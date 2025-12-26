@@ -47,6 +47,10 @@ class CaseEdit(StatesGroup):
 class CaseCardFill(StatesGroup):
     waiting_value = State()
 
+
+class CaseCardFill(StatesGroup):
+    waiting_value = State()
+
 # =========================
 # env
 # =========================
@@ -582,6 +586,30 @@ def is_admin(uid: int) -> bool:
     return uid in ADMIN_USERS
 
 
+def migrate_case_cards_table(con: sqlite3.Connection | None = None) -> set[str]:
+    close_con = con is None
+    if con is None:
+        con = sqlite3.connect(DB_PATH)
+
+    cur = con.cursor()
+    cur.execute("PRAGMA table_info(case_cards)")
+    cols = {row[1] for row in cur.fetchall()}
+
+    for col in ("data", "court_address", "judge_name", "debtor_full_name"):
+        if col not in cols:
+            cur.execute(f"ALTER TABLE case_cards ADD COLUMN {col} TEXT")
+
+    con.commit()
+
+    cur.execute("PRAGMA table_info(case_cards)")
+    result = {row[1] for row in cur.fetchall()}
+
+    if close_con:
+        con.close()
+
+    return result
+
+
 # =========================
 # sqlite (cases)
 # =========================
@@ -635,6 +663,25 @@ def init_db() -> None:
         );
         """)
 
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS case_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                data TEXT,
+                court_name TEXT,
+                court_address TEXT,
+                judge_name TEXT,
+                debtor_full_name TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(owner_user_id, case_id)
+            );
+            """
+        )
+
+        migrate_case_cards_table(con)
         con.commit()
 
 
@@ -802,6 +849,136 @@ def update_case_meta(
             """,
             (stage, notes, cid, owner_user_id),
         )
+        con.commit()
+
+
+CASE_CARD_REQUIRED_FIELDS = [
+    "court_name",
+    "court_address",
+    "debtor_full_name",
+    "debtor_last_name",
+    "debtor_first_name",
+    "debtor_gender",
+    "debtor_birth_date",
+    "debtor_address",
+    "passport_series",
+    "passport_number",
+    "passport_issued_by",
+    "passport_date",
+    "passport_code",
+    "total_debt_rubles",
+    "total_debt_kopeks",
+]
+
+
+def validate_case_card(card: dict[str, Any]) -> dict[str, list[str]]:
+    missing = []
+    for field in CASE_CARD_REQUIRED_FIELDS:
+        val = card.get(field)
+        if val is None or str(val).strip() == "":
+            missing.append(field)
+    return {"missing": missing}
+
+
+def _compose_debtor_full_name(data: dict[str, Any]) -> str | None:
+    last = (data.get("debtor_last_name") or "").strip()
+    first = (data.get("debtor_first_name") or "").strip()
+    middle = (data.get("debtor_middle_name") or "").strip()
+    parts = [p for p in (last, first, middle) if p]
+    return " ".join(parts) if parts else None
+
+
+def get_case_card(owner_user_id: int, cid: int) -> dict[str, Any]:
+    migrate_case_cards_table()
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT data, court_name, court_address, judge_name, debtor_full_name
+              FROM case_cards
+             WHERE owner_user_id = ?
+               AND case_id = ?
+            """,
+            (owner_user_id, cid),
+        )
+        row = cur.fetchone()
+
+    base: dict[str, Any] = {}
+    if row:
+        raw_data, court_name, court_address, judge_name, debtor_full_name = row
+        if raw_data:
+            try:
+                base = json.loads(raw_data)
+            except Exception:
+                base = {}
+        if court_name and not base.get("court_name"):
+            base["court_name"] = court_name
+        if court_address and not base.get("court_address"):
+            base["court_address"] = court_address
+        if judge_name and not base.get("judge_name"):
+            base["judge_name"] = judge_name
+        if debtor_full_name and not base.get("debtor_full_name"):
+            base["debtor_full_name"] = debtor_full_name
+
+    for field in CASE_CARD_REQUIRED_FIELDS:
+        base.setdefault(field, None)
+
+    if base.get("debtor_full_name") is None:
+        base["debtor_full_name"] = _compose_debtor_full_name(base)
+
+    return base
+
+
+def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> None:
+    migrate_case_cards_table()
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(case_cards)")
+        columns = {row[1] for row in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT data FROM case_cards
+             WHERE owner_user_id = ?
+               AND case_id = ?
+            """,
+            (owner_user_id, case_id),
+        )
+        row = cur.fetchone()
+        current: dict[str, Any] = {}
+        if row and row[0]:
+            try:
+                current = json.loads(row[0])
+            except Exception:
+                current = {}
+
+        current.update(data)
+
+        payload = json.dumps(current, ensure_ascii=False)
+
+        insert_columns = ["owner_user_id", "case_id", "data"]
+        placeholders = ["?", "?", "?"]
+        values: list[Any] = [owner_user_id, case_id, payload]
+
+        if "created_at" in columns:
+            insert_columns.append("created_at")
+            placeholders.append("CURRENT_TIMESTAMP")
+
+        if "updated_at" in columns:
+            insert_columns.append("updated_at")
+            placeholders.append("CURRENT_TIMESTAMP")
+
+        update_set_parts = ["data = excluded.data"]
+        if "updated_at" in columns:
+            update_set_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+        sql = f"""
+            INSERT INTO case_cards ({', '.join(insert_columns)})
+            VALUES ({', '.join(placeholders)})
+            ON CONFLICT(owner_user_id, case_id) DO UPDATE SET
+                {', '.join(update_set_parts)}
+        """
+
+        cur.execute(sql, values)
         con.commit()
 
 # =========================
@@ -1316,11 +1493,13 @@ async def docs_case_selected(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    await state.update_data(docs_case_id=cid)
-    await call.message.answer(
-        f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇", reply_markup=docs_menu_ikb(cid)
+        await state.update_data(docs_case_id=cid)
+        await call.message.answer(
+            f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇",
+            reply_markup=docs_menu_ikb(cid),
     )
     await call.answer()
+
 
 
 @dp.callback_query(lambda c: c.data.startswith("docs:gen:"))
@@ -1413,6 +1592,35 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         FSInputFile(path),
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
     )
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":", maxsplit=3)
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    cid_str, filename = parts[2], parts[3]
+
+    if any(bad in filename for bad in ("/", "\\", "..")):
+        await call.message.answer("Некорректное имя файла")
+        await call.answer()
+        return
+
+    path = GENERATED_DIR / "cases" / cid_str / filename
+    if not path.is_file():
+        await call.message.answer("Файл не найден...")
+        await call.answer()
+        return
+
+    await call.message.answer_document(FSInputFile(path))
     await call.answer()
 
 
@@ -1732,6 +1940,7 @@ async def case_list(call: CallbackQuery):
             text="🗂 Заполнить карточку дела",
             callback_data=f"card:fill:{cid}"
         )
+        kb.button(text="🗂 Заполнить карточку дела", callback_data = f"case:card:{cid}")
 
     kb.button(text="🔙 Назад", callback_data="back:cases")
     kb.adjust(1)
@@ -1777,7 +1986,7 @@ async def case_open(call: CallbackQuery):
     )
 
     kb = InlineKeyboardBuilder()
-    kb = InlineKeyboardBuilder()
+    kb.button(text="📁 Карточка дела", callback_data=f"case:card:{cid}")
     kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{cid}:case_number")
     kb.button(text="✏️ Суд", callback_data=f"case:edit:{cid}:court")
     kb.button(text="✏️ Судья", callback_data=f"case:edit:{cid}:judge")
@@ -1785,10 +1994,694 @@ async def case_open(call: CallbackQuery):
     kb.button(text="✏️ Стадия", callback_data=f"case:edit:{cid}:stage")
     kb.button(text="🗒 Заметки", callback_data=f"case:edit:{cid}:notes")
     kb.button(text="🔙 К списку дел", callback_data="case:list")
-    kb.adjust(2, 2, 2, 1)
+    kb.adjust(1, 2, 2, 2)
 
     await call.message.answer(text, reply_markup=kb.as_markup())
     await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_open(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.update_data(card_case_id=cid)
+    card = get_case_card(uid, cid) or {}
+
+    lines = [f"📁 Карточка дела #{cid}"]
+    for key, title in [
+        ("court_name", "Суд"),
+        ("court_address", "Адрес суда"),
+        ("debtor_full_name", "Должник"),
+        ("debtor_gender", "Пол"),
+        ("debtor_birth_date", "Дата рождения"),
+        ("debtor_address", "Адрес должника"),
+        ("passport_series", "Паспорт серия"),
+        ("passport_number", "Паспорт номер"),
+        ("passport_issued_by", "Кем выдан паспорт"),
+        ("passport_date", "Дата выдачи паспорта"),
+        ("passport_code", "Код подразделения"),
+        ("total_debt_rubles", "Сумма долга (рубли)"),
+        ("total_debt_kopeks", "Сумма долга (копейки)"),
+    ]:
+        lines.append(f"{title}: {card.get(key) or '—'}")
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Заполнить", callback_data=f"card:fill:{cid}")
+    kb.button(text="🔙 Назад", callback_data=f"case:open:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+CASE_CARD_FIELDS = [
+    ("court_name", "Суд (название)"),
+    ("court_address", "Суд (адрес)"),
+    ("debtor_full_name", "Должник (ФИО)"),
+    ("debtor_gender", "Пол должника (male/female)"),
+    ("debtor_birth_date", "Дата рождения (дд.мм.гггг)"),
+    ("debtor_address", "Адрес должника"),
+    ("passport_series", "Паспорт серия"),
+    ("passport_number", "Паспорт номер"),
+    ("passport_issued_by", "Кем выдан паспорт"),
+    ("passport_date", "Дата выдачи паспорта"),
+    ("passport_code", "Код подразделения"),
+    ("total_debt_rubles", "Сумма долга (рубли)"),
+    ("total_debt_kopeks", "Сумма долга (копейки)"),
+]
+
+
+def build_case_card_kb(cid: int) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    for key, title in CASE_CARD_FIELDS:
+        kb.button(text=f"✏️ {title}", callback_data=f"case:cardfield:{cid}:{key}")
+    kb.button(text="🔙 К списку дел", callback_data="case:list")
+    kb.adjust(1)
+    return kb
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_open(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.update_data(card_case_id=cid)
+    card = get_case_card(uid, cid) or {}
+    validation = validate_case_card(card)
+    missing = validation.get("missing") if isinstance(validation, dict) else validation
+    missing = missing or []
+
+    total = len(CASE_CARD_FIELDS)
+    filled = sum(1 for key, _ in CASE_CARD_FIELDS if card.get(key))
+    missing_display = ", ".join(missing[:5]) if missing else "—"
+
+    await call.message.answer(
+        f"📁 Карточка дела #{cid}\n"
+        f"Заполнено: {filled}/{total}\n"
+        f"Пустые: {missing_display}",
+        reply_markup=build_case_card_kb(cid).as_markup(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:cardfield:"))
+async def case_card_field(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, field = call.data.split(":", maxsplit=3)
+    cid = int(cid_str)
+    await state.update_data(card_case_id=cid, card_field_key=field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    title = next((title for key, title in CASE_CARD_FIELDS if key == field), field)
+    await call.message.answer(
+        f"Введи значение для «{title}».\nОтправь '-' чтобы очистить.")
+    await call.answer()
+
+
+@dp.message(CaseCardFill.waiting_value)
+async def case_card_value(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    data = await state.get_data()
+    cid = data.get("card_case_id")
+    field = data.get("card_field_key")
+    if not cid or not field:
+        await state.clear()
+        await message.answer("Что-то пошло не так. Открой карточку заново через дело.")
+        return
+
+    raw = (message.text or "").strip()
+    value: Any = None if raw == "-" else raw
+
+    if field == "debtor_gender" and value is not None:
+        gender = str(value).lower()
+        if gender not in {"male", "female"}:
+            await message.answer("Пол укажи как male или female.")
+            return
+        value = gender
+
+    if field == "total_debt_rubles" and value is not None:
+        if not str(value).isdigit():
+            await message.answer("Нужно указать число в рублях.")
+            return
+        value = int(value)
+
+    if field == "total_debt_kopeks" and value is not None:
+        if not str(value).isdigit():
+            await message.answer("Нужно число 0-99 для копеек.")
+            return
+        kop = int(value)
+        if kop < 0 or kop > 99:
+            await message.answer("Копейки должны быть от 0 до 99.")
+            return
+        value = kop
+
+    card = get_case_card(uid, int(cid)) or {}
+    card[field] = value
+    upsert_case_card(uid, int(cid), card)
+
+    validation = validate_case_card(card)
+    missing = validation.get("missing") if isinstance(validation, dict) else validation
+    missing = missing or []
+
+    if missing:
+        next_field = missing[0]
+        await state.update_data(card_case_id=int(cid), card_field_key=next_field)
+        await state.set_state(CaseCardFill.waiting_value)
+        title = next((title for key, title in CASE_CARD_FIELDS if key == next_field), next_field)
+        await message.answer(
+            f"Сохранено. Следующее поле: {title}.\nОтправь '-' чтобы очистить.")
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ Карточка заполнена", reply_markup=build_case_card_kb(int(cid)).as_markup()
+    )
+
+
+CASE_CARD_FIELDS = [
+    ("court_name", "Суд (название)"),
+    ("court_address", "Суд (адрес)"),
+    ("debtor_full_name", "Должник (ФИО)"),
+    ("debtor_gender", "Пол должника (male/female)"),
+    ("debtor_birth_date", "Дата рождения (дд.мм.гггг)"),
+    ("debtor_address", "Адрес должника"),
+    ("passport_series", "Паспорт серия"),
+    ("passport_number", "Паспорт номер"),
+    ("passport_issued_by", "Кем выдан паспорт"),
+    ("passport_date", "Дата выдачи паспорта"),
+    ("passport_code", "Код подразделения"),
+    ("total_debt_rubles", "Сумма долга (рубли)"),
+    ("total_debt_kopeks", "Сумма долга (копейки)"),
+]
+
+
+def build_case_card_kb(cid: int, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
+    kb = InlineKeyboardBuilder()
+    for key, title in fields:
+        kb.button(text=f"✏️ {title}", callback_data=f"case:cardfield:{cid}:{key}")
+    kb.button(text="🔙 К списку дел", callback_data="case:list")
+    kb.adjust(1)
+    return kb
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_open(call: CallbackQuery, state: FSMContext, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.update_data(card_case_id=cid)
+    card = get_case_card(uid, cid) or {}
+    validation_result = validate_case_card(card)
+    missing = (
+        validation_result.get("missing", [])
+        if isinstance(validation_result, dict)
+        else validation_result
+    )
+
+    total = len(fields)
+    filled = sum(1 for key, _ in fields if card.get(key))
+    missing_display = ", ".join(missing[:5]) if missing else "—"
+
+    await call.message.answer(
+        f"📁 Карточка дела #{cid}\n"
+        f"Заполнено: {filled}/{total}\n"
+        f"Пустые: {missing_display}",
+        reply_markup=build_case_card_kb(cid, fields=fields).as_markup(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:cardfield:"))
+async def case_card_field(call: CallbackQuery, state: FSMContext, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, field = call.data.split(":", maxsplit=3)
+    cid = int(cid_str)
+    await state.update_data(card_case_id=cid, card_field_key=field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    title = next((title for key, title in fields if key == field), field)
+    await call.message.answer(
+        f"Введи значение для «{title}».\nОтправь '-' чтобы очистить.")
+    await call.answer()
+
+
+@dp.message(CaseCardFill.waiting_value)
+async def case_card_value(message: Message, state: FSMContext, fields: list[tuple[str, str]] = CASE_CARD_FIELDS):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    data = await state.get_data()
+    cid = data.get("card_case_id")
+    field = data.get("card_field_key")
+    if not cid or not field:
+        await state.clear()
+        await message.answer("Что-то пошло не так. Открой карточку заново через дело.")
+        return
+
+    raw = (message.text or "").strip()
+    value: Any = None if raw == "-" else raw
+
+    if field == "debtor_gender" and value is not None:
+        gender = str(value).lower()
+        if gender not in {"male", "female"}:
+            await message.answer("Пол укажи как male или female.")
+            return
+        value = gender
+    if field == "total_debt_rubles" and value is not None:
+        if not str(value).isdigit():
+            await message.answer("Нужно указать число в рублях.")
+            return
+        value = int(value)
+    if field == "total_debt_kopeks" and value is not None:
+        if not str(value).isdigit():
+            await message.answer("Нужно число 0-99 для копеек.")
+            return
+        kop = int(value)
+        if kop < 0 or kop > 99:
+            await message.answer("Копейки должны быть от 0 до 99.")
+            return
+        value = kop
+
+    card = get_case_card(uid, int(cid)) or {}
+    card[field] = value
+    upsert_case_card(uid, int(cid), card)
+
+    missing = validate_case_card(card).get("missing", [])
+    if missing:
+        next_field = missing[0]
+        await state.update_data(card_case_id=int(cid), card_field_key=next_field)
+        await state.set_state(CaseCardFill.waiting_value)
+        title = next((title for key, title in fields if key == next_field), next_field)
+        await message.answer(
+            f"Сохранено. Следующее поле: {title}.\nОтправь '-' чтобы очистить.")
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ Карточка заполнена",
+        reply_markup=build_case_card_kb(int(cid), fields=fields).as_markup(),
+    )
+
+
+CASE_CARD_FIELDS = [
+    (
+        "court_name",
+        {
+            "title": "Наименование суда",
+            "prompt": "Укажи наименование суда.",
+        },
+    ),
+    (
+        "court_address",
+        {
+            "title": "Адрес суда",
+            "prompt": "Укажи адрес суда.",
+        },
+    ),
+    (
+        "debtor_last_name",
+        {
+            "title": "Фамилия должника",
+            "prompt": "Укажи фамилию должника.",
+        },
+    ),
+    (
+        "debtor_first_name",
+        {
+            "title": "Имя должника",
+            "prompt": "Укажи имя должника.",
+        },
+    ),
+    (
+        "debtor_full_name",
+        {
+            "title": "ФИО должника",
+            "prompt": "Укажи полное ФИО должника.",
+        },
+    ),
+    (
+        "debtor_gender",
+        {
+            "title": "Пол должника",
+            "prompt": "Пол должника (м/ж или male/female).",
+        },
+    ),
+    (
+        "debtor_birth_date",
+        {
+            "title": "Дата рождения",
+            "prompt": "Дата рождения должника (ДД.ММ.ГГГГ).",
+        },
+    ),
+    (
+        "debtor_address",
+        {
+            "title": "Адрес должника",
+            "prompt": "Адрес регистрации должника.",
+        },
+    ),
+    (
+        "passport_series",
+        {
+            "title": "Серия паспорта",
+            "prompt": "Укажи серию паспорта (4 цифры).",
+        },
+    ),
+    (
+        "passport_number",
+        {
+            "title": "Номер паспорта",
+            "prompt": "Укажи номер паспорта (6 цифр).",
+        },
+    ),
+    (
+        "passport_issued_by",
+        {
+            "title": "Кем выдан паспорт",
+            "prompt": "Кем выдан паспорт (полностью).",
+        },
+    ),
+    (
+        "passport_date",
+        {
+            "title": "Дата выдачи паспорта",
+            "prompt": "Дата выдачи паспорта (ДД.ММ.ГГГГ).",
+        },
+    ),
+    (
+        "passport_code",
+        {
+            "title": "Код подразделения",
+            "prompt": "Код подразделения (например 123-456).",
+        },
+    ),
+    (
+        "total_debt_rubles",
+        {
+            "title": "Сумма долга (руб.)",
+            "prompt": "Общая сумма долга в рублях (целое число).",
+        },
+    ),
+    (
+        "total_debt_kopeks",
+        {
+            "title": "Сумма долга (коп.)",
+            "prompt": "Копейки (0-99).",
+        },
+    ),
+]
+
+CASE_CARD_FIELD_META = {k: v for k, v in CASE_CARD_FIELDS}
+
+
+def _format_case_card(card: dict[str, Any]) -> list[str]:
+    lines = []
+    for key, meta in CASE_CARD_FIELDS:
+        val = card.get(key)
+        show_val = "—"
+        if val is None or str(val).strip() == "":
+            show_val = "—"
+        elif isinstance(val, (int, float)):
+            show_val = str(val)
+        else:
+            show_val = str(val)
+        lines.append(f"{meta['title']}: {show_val}")
+    return lines
+
+
+def _humanize_missing(missing: list[str]) -> str:
+    titles = [CASE_CARD_FIELD_META.get(key, {}).get("title", key) for key in missing]
+    return ", ".join(titles)
+
+
+def _card_completion_status(card: dict[str, Any]) -> tuple[int, int]:
+    validation = validate_case_card(card)
+    missing = validation.get("missing") or []
+    total = len(CASE_CARD_REQUIRED_FIELDS)
+    return total - len(missing), total
+
+
+async def send_card_fill_menu(message_target, uid: int, cid: int) -> None:
+    row = get_case(uid, cid)
+    if not row:
+        await message_target.answer("Дело не найдено.")
+        return
+
+    _, _owner_user_id, code_name, *_ = row
+    card = get_case_card(uid, cid)
+    validation = validate_case_card(card)
+
+    filled, total = _card_completion_status(card)
+    text_lines = ["📁 Карточка дела", f"Дело #{cid} | {code_name}"]
+    text_lines.append("")
+    text_lines.extend(_format_case_card(card))
+    text_lines.append("")
+    text_lines.append(f"Заполнено: {filled}/{total}")
+
+    if validation.get("missing"):
+        text_lines.append("Не заполнено: " + _humanize_missing(validation["missing"]))
+    else:
+        text_lines.append("Карточка заполнена ✅")
+
+    kb = InlineKeyboardBuilder()
+    for key, meta in CASE_CARD_FIELDS:
+        kb.button(text=f"✏️ {meta['title']}", callback_data=f"case:cardfield:{cid}:{key}")
+    kb.button(text="🔙 Назад к делам", callback_data="case:list")
+    kb.adjust(1)
+
+    await message_target.answer("\n".join(text_lines), reply_markup=kb.as_markup())
+
+
+async def send_case_card_menu(message_target, uid: int, cid: int) -> None:
+    row = get_case(uid, cid)
+    if not row:
+        await message_target.answer("Дело не найдено.")
+        return
+
+    _, _owner_user_id, code_name, *_ = row
+    card = get_case_card(uid, cid)
+    validation = validate_case_card(card)
+
+    text_lines = ["📁 Карточка дела", f"Дело #{cid} | {code_name}"]
+    text_lines.append("")
+    text_lines.extend(_format_case_card(card))
+
+    if validation.get("missing"):
+        text_lines.append("")
+        text_lines.append("Не заполнено: " + _humanize_missing(validation["missing"]))
+    else:
+        text_lines.append("")
+        text_lines.append("Карточка заполнена ✅")
+
+    kb = InlineKeyboardBuilder()
+    for key, meta in CASE_CARD_FIELDS:
+        kb.button(text=f"✏️ {meta['title']}", callback_data=f"case:card_edit:{cid}:{key}")
+    kb.button(text="🔙 Готово", callback_data=f"case:open:{cid}")
+    kb.adjust(1)
+
+    await message_target.answer("\n".join(text_lines), reply_markup=kb.as_markup())
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+    await send_card_fill_menu(call.message, uid, cid)
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:card_edit:"))
+async def case_card_edit(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, field = call.data.split(":", maxsplit=3)
+    cid = int(cid_str)
+
+    if field not in CASE_CARD_FIELD_META:
+        await call.answer()
+        return
+
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.update_data(card_cid=cid, card_field=field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    prompt = CASE_CARD_FIELD_META[field]["prompt"]
+    await call.message.answer(prompt)
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("card:fill:"))
+async def card_fill_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str = call.data.split(":", maxsplit=2)
+    cid = int(cid_str)
+
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+    await send_card_fill_menu(call.message, uid, cid)
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:cardfield:"))
+async def card_field_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, field = call.data.split(":", maxsplit=3)
+    cid = int(cid_str)
+
+    if field not in CASE_CARD_FIELD_META:
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.update_data(card_case_id=cid, card_field_key=field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    prompt = CASE_CARD_FIELD_META[field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
+    await call.message.answer(prompt)
+    await call.answer()
+
+
+def _normalize_card_input(field: str, text: str) -> tuple[bool, str | int | None, str | None]:
+    cleaned = text.strip()
+    if not cleaned:
+        return False, None, "Пусто. Повтори ввод."
+
+    if field == "debtor_gender":
+        gender = cleaned.lower()
+        if gender in ("м", "male", "m"):
+            return True, "male", None
+        if gender in ("ж", "female", "f", "жен", "женщина"):
+            return True, "female", None
+        return False, None, "Укажи пол как м/ж или male/female."
+
+    if field == "passport_date":
+        try:
+            datetime.strptime(cleaned, "%d.%m.%Y")
+        except ValueError:
+            return False, None, "Формат даты: ДД.ММ.ГГГГ. Попробуй ещё раз."
+        return True, cleaned, None
+
+    if field == "total_debt_rubles":
+        try:
+            val = int(cleaned)
+        except ValueError:
+            return False, None, "Нужно целое число в рублях."
+        if val < 0:
+            return False, None, "Значение не может быть отрицательным."
+        return True, val, None
+
+    if field == "total_debt_kopeks":
+        try:
+            val = int(cleaned)
+        except ValueError:
+            return False, None, "Нужно целое число (0-99)."
+        if val < 0 or val > 99:
+            return False, None, "Копейки должны быть от 0 до 99."
+        return True, val, None
+
+    return True, cleaned, None
+
+
+@dp.message(CaseCardFill.waiting_value)
+async def case_card_value_set(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    data = await state.get_data()
+    cid = data.get("card_cid") or data.get("card_case_id")
+    field = data.get("card_field") or data.get("card_field_key")
+
+    if not cid or not field:
+        await state.clear()
+        await message.answer("Что-то пошло не так. Открой карточку заново через дело.")
+        return
+
+    card = get_case_card(uid, int(cid))
+    raw_text = message.text or ""
+    if raw_text.strip() == "-":
+        ok, value, error_msg = True, None, None
+    else:
+        ok, value, error_msg = _normalize_card_input(field, raw_text)
+        if not ok:
+            await message.answer(error_msg)
+            return
+
+    card[field] = value
+    if field in {"debtor_last_name", "debtor_first_name", "debtor_middle_name"}:
+        composed = _compose_debtor_full_name(card)
+        if composed:
+            card["debtor_full_name"] = composed
+
+    upsert_case_card(uid, int(cid), card)
+    next_field = None
+    for key, _meta in CASE_CARD_FIELDS:
+        val = card.get(key)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            next_field = key
+            break
+
+    if next_field:
+        await state.update_data(card_case_id=int(cid), card_field_key=next_field)
+        await state.set_state(CaseCardFill.waiting_value)
+        prompt = CASE_CARD_FIELD_META[next_field]["prompt"]
+        filled, total = _card_completion_status(card)
+        await message.answer(
+            f"✅ Сохранено. Заполнено {filled}/{total}.\n"
+            f"Далее: {CASE_CARD_FIELD_META[next_field]['title']}.\n"
+            f"{prompt}\nОтправь '-' чтобы оставить пустым."
+        )
+        return
+
+    await state.clear()
+    filled, total = _card_completion_status(card)
+    await message.answer(f"✅ Сохранено. Заполнено {filled}/{total}.")
+    await send_card_fill_menu(message, uid, int(cid))
 @dp.callback_query(lambda c: c.data.startswith("case:edit:"))
 async def case_edit_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
