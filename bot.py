@@ -1396,11 +1396,14 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
             await call.answer()
             return
 
-        missing = validate_case_card(card)
+        validation = validate_case_card(card)
+        missing = validation.get("missing", []) if isinstance(validation, dict) else (validation or [])
+
         if missing:
             await call.message.answer(
                 "Не хватает обязательных данных в карточке дела:\n"
-                + "\n".join(f"- {m}" for m in missing)
+                + "- " + _humanize_missing(missing).replace(", ", "\n- ")
+                + "\n\nНажми «Редактирование карточки» и заполни поля по шагам."
             )
             await call.answer()
             return
@@ -1440,10 +1443,32 @@ async def case_edit_menu(call: CallbackQuery, state: FSMContext):
 
     case_id = int(call.data.split(":")[-1])
 
-    # Открываем реальное меню карточки дела
     await state.clear()
-    await state.update_data(card_case_id=case_id)
-    await send_card_fill_menu(call.message, uid, case_id)
+
+    card = get_case_card(uid, case_id) or {}
+    next_field = None
+    for key, _meta in CASE_CARD_FIELDS:
+        val = card.get(key)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            next_field = key
+            break
+
+    if not next_field:
+        await state.update_data(card_case_id=case_id)
+        await send_card_fill_menu(call.message, uid, case_id)
+        await call.answer()
+        return
+
+    await state.update_data(card_case_id=case_id, card_field_key=next_field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    filled, total = _card_completion_status(card)
+    prompt = CASE_CARD_FIELD_META[next_field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
+    await call.message.answer(
+        f"✍️ Заполняем карточку дела #{case_id}. Заполнено {filled}/{total}.\n"
+        f"Сейчас: {CASE_CARD_FIELD_META[next_field]['title']}.\n"
+        f"{prompt}"
+    )
     await call.answer()
 
 
@@ -2114,9 +2139,11 @@ async def case_card_field(call: CallbackQuery, state: FSMContext):
     await state.update_data(card_case_id=cid, card_field_key=field)
     await state.set_state(CaseCardFill.waiting_value)
 
-    title = next((title for key, title in CASE_CARD_FIELDS if key == field), field)
+    title = CASE_CARD_FIELD_META.get(field, {}).get("title", field)
+    prompt = CASE_CARD_FIELD_META.get(field, {}).get("prompt", "")
     await call.message.answer(
-        f"Введи значение для «{title}».\nОтправь '-' чтобы очистить.")
+        f"✍️ {title}\n{prompt}\nОтправь '-' чтобы очистить."
+    )
     await call.answer()
 
 
@@ -2251,9 +2278,11 @@ async def case_card_field(call: CallbackQuery, state: FSMContext, fields: list[t
     await state.update_data(card_case_id=cid, card_field_key=field)
     await state.set_state(CaseCardFill.waiting_value)
 
-    title = next((title for key, title in fields if key == field), field)
+    title = CASE_CARD_FIELD_META.get(field, {}).get("title", field)
+    prompt = CASE_CARD_FIELD_META.get(field, {}).get("prompt", "")
     await call.message.answer(
-        f"Введи значение для «{title}».\nОтправь '-' чтобы очистить.")
+        f"✍️ {title}\n{prompt}\nОтправь '-' чтобы очистить."
+    )
     await call.answer()
 
 
