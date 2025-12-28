@@ -46,6 +46,15 @@ class CaseEdit(StatesGroup):
     value = State()
 class CaseCardFill(StatesGroup):
     waiting_value = State()
+class CreditorsFill(StatesGroup):
+    name = State()
+    inn = State()
+    ogrn = State()
+    address = State()
+    debt_rubles = State()
+    debt_kopeks = State()
+    note = State()
+    creditors_text = State()
 
 # =========================
 # env
@@ -291,49 +300,103 @@ def build_family_status_block(card: dict) -> str:
 def build_creditors_header_block(creditors: list[dict] | None) -> str:
     return "Сведения о кредиторах:" if creditors else ""
 
-
 def build_creditors_block(creditors: list[dict] | None) -> str:
     """
-    creditors = [
-      {"name": "...", "obligations":[{"amount_rubles":123,"amount_kopeks":45,"source":"ОКБ"}]}
-    ]
+    Поддерживает 2 формата кредиторов:
+
+    1) Новый (опросник):
+       {
+         "name": "...",
+         "inn": "...", "ogrn": "...",
+         "debt_rubles": "...", "debt_kopeks": "...",
+         "note": "ОКБ/договор/и т.п."
+       }
+
+    2) Старый:
+       {
+         "name": "...",
+         "obligations": [{"amount_rubles":123,"amount_kopeks":45,"source":"ОКБ"}]
+       }
     """
     if not isinstance(creditors, list) or not creditors:
         return ""
 
+    def _digits(s: str) -> str:
+        return "".join(ch for ch in str(s) if ch.isdigit())
+
     lines: list[str] = []
+
     for i, c in enumerate(creditors, start=1):
+        if not isinstance(c, dict):
+            continue
+
         name = str((c.get("name") or "Кредитор")).strip()
-        obs = c.get("obligations") or []
-        if not isinstance(obs, list):
-            obs = []
 
-        obs_txt: list[str] = []
-        for ob in obs:
-            if not isinstance(ob, dict):
-                continue
-            r = ob.get("amount_rubles")
-            k = ob.get("amount_kopeks")
-            src = (ob.get("source") or "").strip()
+        # --- идентификаторы (для нового формата) ---
+        inn = str(c.get("inn") or "").strip()
+        ogrn = str(c.get("ogrn") or "").strip()
+        ids = []
+        if inn:
+            ids.append(f"ИНН {inn}")
+        if ogrn:
+            ids.append(f"ОГРН {ogrn}")
+        name_with_ids = name + (f" ({', '.join(ids)})" if ids else "")
 
-            money_parts: list[str] = []
-            if r is not None:
-                money_parts.append(f"{int(r)} руб.")
-            if k is not None:
-                money_parts.append(f"{int(k):02d} коп.")
-            money = " ".join(money_parts).strip()
+        # --- новый формат суммы ---
+        debt_r = c.get("debt_rubles")
+        debt_k = c.get("debt_kopeks")
+        note = str(c.get("note") or "").strip()
 
-            if money and src:
-                obs_txt.append(f"{money} ({src})")
-            elif money:
-                obs_txt.append(money)
-            elif src:
-                obs_txt.append(f"({src})")
+        money_new = ""
+        if debt_r not in (None, "", "-"):
+            dr = _digits(debt_r)
+            if dr != "":
+                money_new = f"{int(dr)} руб."
+        if debt_k not in (None, "", "-"):
+            dk = _digits(debt_k)
+            if dk != "":
+                money_new = (money_new + " " if money_new else "") + f"{int(dk):02d} коп."
 
-        if obs_txt:
-            lines.append(f"{i}) {name} — " + "; ".join(obs_txt))
+        if money_new and note:
+            line_new = f"{i}) {name_with_ids} — {money_new} ({note})"
+        elif money_new:
+            line_new = f"{i}) {name_with_ids} — {money_new}"
+        elif note:
+            line_new = f"{i}) {name_with_ids} — ({note})"
         else:
-            lines.append(f"{i}) {name}")
+            line_new = f"{i}) {name_with_ids}"
+
+        # --- старый формат obligations имеет приоритет, если он реально заполнен ---
+        obs = c.get("obligations")
+        if isinstance(obs, list) and any(isinstance(x, dict) for x in obs):
+            obs_txt: list[str] = []
+            for ob in obs:
+                if not isinstance(ob, dict):
+                    continue
+                r = ob.get("amount_rubles")
+                k = ob.get("amount_kopeks")
+                src = (ob.get("source") or "").strip()
+
+                money_parts: list[str] = []
+                if r is not None and str(r).strip() != "":
+                    money_parts.append(f"{int(r)} руб.")
+                if k is not None and str(k).strip() != "":
+                    money_parts.append(f"{int(k):02d} коп.")
+                money = " ".join(money_parts).strip()
+
+                if money and src:
+                    obs_txt.append(f"{money} ({src})")
+                elif money:
+                    obs_txt.append(money)
+                elif src:
+                    obs_txt.append(f"({src})")
+
+            if obs_txt:
+                lines.append(f"{i}) {name} — " + "; ".join(obs_txt))
+            else:
+                lines.append(f"{i}) {name}")
+        else:
+            lines.append(line_new)
 
     return "\n".join(lines)
 
@@ -464,6 +527,73 @@ def _replace_placeholders_strong(doc: Document, mapping: Dict[str, Any]) -> None
                             for np in ncell.paragraphs:
                                 apply_to_paragraph(np)
 
+def build_online_hearing_docx(case_row: Tuple) -> Path:
+    """
+    Генерация ходатайства о ВКС (онлайн-заседание).
+    Делает простой DOCX без шаблона, чтобы гарантированно не падать.
+    """
+    (
+        cid,
+        owner_user_id,
+        code_name,
+        case_number,
+        court,
+        judge,
+        fin_manager,
+        stage,
+        notes,
+        created_at,
+        updated_at,
+    ) = case_row
+
+    doc = Document()
+
+    # Шапка: кому и от кого
+    doc.add_paragraph("В Арбитражный суд")
+    doc.add_paragraph(court or "не указано")
+    doc.add_paragraph("")
+
+    prof = get_profile(owner_user_id)
+    if prof:
+        _, full_name, role, address, phone, email, *_ = prof
+        doc.add_paragraph("От: " + (full_name or "не указано"))
+        if role:
+            doc.add_paragraph("Статус: " + role)
+        if address:
+            doc.add_paragraph("Адрес: " + address)
+        if phone:
+            doc.add_paragraph("Телефон: " + phone)
+        if email:
+            doc.add_paragraph("Email: " + email)
+    else:
+        doc.add_paragraph("От: не указано")
+
+    doc.add_paragraph("")
+    doc.add_paragraph("ХОДАТАЙСТВО")
+    doc.add_paragraph("о проведении судебного заседания с использованием ВКС")
+    doc.add_paragraph("")
+
+    if case_number:
+        doc.add_paragraph(f"Дело № {case_number}")
+    if judge:
+        doc.add_paragraph(f"Судья: {judge}")
+    if fin_manager:
+        doc.add_paragraph(f"Финансовый управляющий: {fin_manager}")
+
+    doc.add_paragraph("")
+    doc.add_paragraph("Прошу обеспечить участие в судебном заседании с использованием системы видеоконференц-связи.")
+    doc.add_paragraph("")
+    doc.add_paragraph("Дата: " + datetime.now().strftime("%d.%m.%Y"))
+    doc.add_paragraph("")
+    doc.add_paragraph("Подпись: ____________")
+
+    fname = f"online_hearing_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    case_dir = GENERATED_DIR / "cases" / str(cid)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    out_path = case_dir / fname
+    doc.save(out_path)
+    return out_path
+
 
 def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
@@ -562,12 +692,19 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     creditors_text = card.get("creditors_text")
     creditors_text = str(creditors_text).strip() if creditors_text is not None else ""
     creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+
     if creditors_text:
         creditors_block = creditors_text
     elif creditors:
         creditors_block = build_creditors_block(creditors)
     else:
         creditors_block = "Сведения о кредиторах не представлены."
+
+    # creditors_header_block: короткий список для шапки (из того же источника, что и creditors_block)
+    if creditors:
+        creditors_header_block = build_creditors_header_block(creditors)
+    else:
+        creditors_header_block = "Сведения о кредиторах не представлены."
 
     # vehicle_block: дефолт при отсутствии
     vehicle_block = ""
@@ -579,31 +716,72 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         vehicle_block = "Транспортные средства: отсутствуют."
 
     mapping = {
-        # 23 плейсхолдера шаблона — ключи должны совпадать 1:1
         "attachments_list": attachments_list,
         "certificate_date": certificate_date,
         "certificate_number": certificate_number,
         "court_address": court_address,
         "court_name": court_name,
+
+        # Кредиторы: шапка + основной блок
         "creditors_block": creditors_block,
+        "creditors_header_block": creditors_header_block,
+
         "date": datetime.now().strftime("%d.%m.%Y"),
+
         "debtor_address": debtor_address,
         "debtor_birth_date": debtor_birth_date,
         "debtor_full_name": debtor_full_name,
-        "debtor_inn": debtor_inn,
-        "debtor_passport_code": debtor_passport_code,
-        "debtor_passport_date": debtor_passport_date,
-        "debtor_passport_issued_by": debtor_passport_issued_by,
-        "debtor_passport": debtor_passport,
-        "debtor_phone": debtor_phone,
-        "debtor_snils": debtor_snils,
-        "deposit_deferral_request": deposit_deferral_request,
+
+        # В шаблоне есть и обычные, и *_or_absent
+        "debtor_inn": debtor_inn if debtor_inn != "не указано" else "",
+        "debtor_inn_or_absent": debtor_inn if debtor_inn != "не указано" else "отсутствует",
+
+        "debtor_snils": debtor_snils if debtor_snils != "не указано" else "",
+        "debtor_snils_or_absent": debtor_snils if debtor_snils != "не указано" else "отсутствует",
+
+        "debtor_phone_or_absent": debtor_phone if debtor_phone != "не указано" else "отсутствует",
+
+        # Паспорт: ключи должны совпадать с плейсхолдерами шаблона
+        "passport_series": passport_series or "",
+        "passport_number": passport_number or "",
+        "passport_issued_by": debtor_passport_issued_by if debtor_passport_issued_by != "не указано" else "",
+        "passport_date": debtor_passport_date if debtor_passport_date != "не указано" else "",
+        "passport_code": debtor_passport_code if debtor_passport_code != "не указано" else "",
+
+        # Эти плейсхолдеры есть в шаблоне (ты их показывал в списке)
+        "debtor_last_name_initials": build_debtor_last_name_initials(card),
+
         "financial_manager_info": financial_manager_info,
+        "family_status_block": build_family_status_block(card),
+
         "marital_status": marital_status,
+
         "total_debt_kopeks": total_debt_kopeks,
         "total_debt_rubles": total_debt_rubles,
+
         "vehicle_block": vehicle_block,
+
+        "deposit_deferral_request": deposit_deferral_request,
     }
+
+    # гендерные формы (debtor_having_word, debtor_registered_word, debtor_living_word,
+    # debtor_not_registered_word, debtor_insolvent_word)
+    try:
+        gender_forms = build_gender_forms(card.get("debtor_gender"))
+        if isinstance(gender_forms, dict):
+            mapping.update(gender_forms)
+    except Exception:
+        # если пол не заполнен или функция упала — ставим нейтральные значения
+        mapping.update(
+            {
+                "debtor_having_word": "имеющий(ая)",
+                "debtor_registered_word": "зарегистрированный(ая)",
+                "debtor_living_word": "проживающий(ая)",
+                "debtor_not_registered_word": "не зарегистрирован(а)",
+                "debtor_insolvent_word": "неплатёжеспособный(ая)",
+            }
+        )
+
 
     _replace_placeholders_strong(doc, mapping)
     # второй проход — добиваем плейсхолдеры, разорванные Word по runs
@@ -637,6 +815,33 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         return False
 
     if _has_unreplaced_placeholders(doc):
+        import re
+
+        # диагностируем, что именно осталось в документе
+        left = set()
+
+        def _scan_paragraph_for_left(p):
+            txt = p.text or ""
+            for m in re.findall(r"\{\{[^}]+\}\}", txt):
+                left.add(m)
+
+        for p in doc.paragraphs:
+            _scan_paragraph_for_left(p)
+
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        _scan_paragraph_for_left(p)
+                    for nested in cell.tables:
+                        for nrow in nested.rows:
+                            for ncell in nrow.cells:
+                                for p in ncell.paragraphs:
+                                    _scan_paragraph_for_left(p)
+
+        import logging
+        logging.exception("UNREPLACED_PLACEHOLDERS: %s", sorted(left))
+
         raise ValueError("В документе остались не заменённые плейсхолдеры вида {{...}}")
 
     fname = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
@@ -2332,6 +2537,17 @@ async def send_card_fill_menu(message_target, uid: int, cid: int) -> None:
     kb = InlineKeyboardBuilder()
     for key, meta in CASE_CARD_FIELDS:
         kb.button(text=f"✏️ {meta['title']}", callback_data=f"case:cardfield:{cid}:{key}")
+
+    # отдельный раздел кредиторов
+    creditors_count = 0
+    try:
+        creditors_val = card.get("creditors")
+        if isinstance(creditors_val, list):
+            creditors_count = len(creditors_val)
+    except Exception:
+        creditors_count = 0
+
+    kb.button(text=f"👥 Кредиторы ({creditors_count})", callback_data=f"case:creditors:{cid}")
     kb.button(text="🔙 Назад к делам", callback_data="case:list")
     kb.adjust(1)
 
@@ -2571,6 +2787,341 @@ async def case_card_value_set(message: Message, state: FSMContext):
     await state.clear()
     filled, total = _card_completion_status(card)
     await message.answer(f"✅ Карточка заполнена. Заполнено {filled}/{total}.")
+
+def _format_creditor_line(i: int, c: dict) -> str:
+    name = (c.get("name") or "—").strip()
+    inn = (c.get("inn") or "").strip()
+    ogrn = (c.get("ogrn") or "").strip()
+    debt_r = (c.get("debt_rubles") or "").strip()
+    debt_k = (c.get("debt_kopeks") or "").strip()
+
+    parts = [f"{i}) {name}"]
+    ids = []
+    if inn:
+        ids.append(f"ИНН {inn}")
+    if ogrn:
+        ids.append(f"ОГРН {ogrn}")
+    if ids:
+        parts.append(" (" + ", ".join(ids) + ")")
+    if debt_r or debt_k:
+        dk = debt_k if debt_k else "00"
+        dr = debt_r if debt_r else "0"
+        parts.append(f" — {dr} руб. {dk} коп.")
+    return "".join(parts)
+
+
+def _safe_digits(s: str) -> str:
+    return "".join(ch for ch in s if ch.isdigit())
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
+async def creditors_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+
+    card = get_case_card(uid, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list):
+        creditors = []
+
+    creditors_text = (card.get("creditors_text") or "").strip()
+
+    lines = [f"👥 Кредиторы для дела #{cid}"]
+    lines.append(f"Список: {len(creditors)}")
+    if creditors_text:
+        lines.append("Есть ручной текст creditors_text: ✅ (он имеет приоритет при генерации)")
+    else:
+        lines.append("Ручной текст creditors_text: —")
+
+    if creditors:
+        lines.append("")
+        lines.append("Текущий список:")
+        for i, c in enumerate(creditors, 1):
+            lines.append(_format_creditor_line(i, c))
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить кредитора", callback_data=f"creditors:add:{cid}")
+    kb.button(text="🗑 Удалить кредитора", callback_data=f"creditors:del:{cid}")
+    kb.button(text="🧾 Ввести одним текстом", callback_data=f"creditors:text:{cid}")
+    kb.button(text="🧹 Очистить creditors_text", callback_data=f"creditors:text_clear:{cid}")
+    kb.button(text="🔙 Назад в карточку", callback_data=f"case:card:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("creditors:add:"))
+async def creditors_add_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    await state.clear()
+    await state.update_data(card_case_id=cid, creditor_tmp={})
+    await state.set_state(CreditorsFill.name)
+    await call.message.answer("Введи название кредитора (обязательно).")
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("creditors:del:"))
+async def creditors_delete_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    card = get_case_card(uid, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list) or not creditors:
+        await call.message.answer("Список кредиторов пуст.")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = [f"🗑 Удаление кредитора (дело #{cid})", "Выбери номер:"]
+    for i, c in enumerate(creditors, 1):
+        lines.append(_format_creditor_line(i, c))
+        kb.button(text=f"Удалить #{i}", callback_data=f"creditors:delone:{cid}:{i}")
+    kb.button(text="🔙 Назад", callback_data=f"case:creditors:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("creditors:delone:"))
+async def creditors_delete_one(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, idx_str = call.data.split(":")
+    cid = int(cid_str)
+    idx = int(idx_str)
+
+    card = get_case_card(uid, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list):
+        creditors = []
+    if idx < 1 or idx > len(creditors):
+        await call.message.answer("Некорректный номер.")
+        await call.answer()
+        return
+
+    removed = creditors.pop(idx - 1)
+    card["creditors"] = creditors
+    upsert_case_card(uid, cid, card)
+
+    name = (removed.get("name") or "—").strip()
+    await call.message.answer(f"✅ Удалено: {name}")
+    # вернём меню кредиторов
+    await creditors_menu(call, state)
+
+
+@dp.callback_query(lambda c: c.data.startswith("creditors:text_clear:"))
+async def creditors_text_clear(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    card = get_case_card(uid, cid) or {}
+    card["creditors_text"] = None
+    upsert_case_card(uid, cid, card)
+
+    await call.message.answer("✅ creditors_text очищен.")
+    await creditors_menu(call, state)
+
+
+@dp.callback_query(lambda c: c.data.startswith("creditors:text:"))
+async def creditors_text_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+    await state.set_state(CreditorsFill.creditors_text)
+
+    await call.message.answer(
+        "Вставь текст кредиторов одним блоком.\n"
+        "Он будет иметь приоритет над списком creditors при генерации.\n"
+        "Отправь '-' чтобы очистить."
+    )
+    await call.answer()
+
+
+@dp.message(CreditorsFill.creditors_text)
+async def creditors_text_set(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        return
+
+    data = await state.get_data()
+    cid = int(data.get("card_case_id"))
+
+    text = (message.text or "").strip()
+    card = get_case_card(uid, cid) or {}
+
+    if text == "-":
+        card["creditors_text"] = None
+        upsert_case_card(uid, cid, card)
+        await state.clear()
+        await message.answer("✅ creditors_text очищен.")
+        # показать меню кредиторов
+        fake_call = type("obj", (), {"from_user": message.from_user, "data": f"case:creditors:{cid}", "message": message, "answer": (lambda *a, **k: None)})
+        await creditors_menu(fake_call, state)
+        return
+
+    card["creditors_text"] = text
+    upsert_case_card(uid, cid, card)
+
+    await state.clear()
+    await message.answer("✅ Сохранено creditors_text.")
+    fake_call = type("obj", (), {"from_user": message.from_user, "data": f"case:creditors:{cid}", "message": message, "answer": (lambda *a, **k: None)})
+    await creditors_menu(fake_call, state)
+
+
+@dp.message(CreditorsFill.name)
+async def creditors_step_name(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    if not txt or txt == "-":
+        await message.answer("Название кредитора обязательно. Введи ещё раз.")
+        return
+
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+    tmp["name"] = txt
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.inn)
+    await message.answer("ИНН (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.inn)
+async def creditors_step_inn(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        tmp["inn"] = _safe_digits(txt)
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.ogrn)
+    await message.answer("ОГРН (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.ogrn)
+async def creditors_step_ogrn(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        tmp["ogrn"] = _safe_digits(txt)
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.address)
+    await message.answer("Адрес кредитора (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.address)
+async def creditors_step_address(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        tmp["address"] = txt
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.debt_rubles)
+    await message.answer("Сумма долга (рубли) (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.debt_rubles)
+async def creditors_step_debt_rubles(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        digits = _safe_digits(txt)
+        if digits == "":
+            await message.answer("Нужно число (или '-' чтобы пропустить).")
+            return
+        tmp["debt_rubles"] = digits
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.debt_kopeks)
+    await message.answer("Сумма долга (копейки 0-99) (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.debt_kopeks)
+async def creditors_step_debt_kopeks(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        digits = _safe_digits(txt)
+        if digits == "":
+            await message.answer("Нужно число 0-99 (или '-' чтобы пропустить).")
+            return
+        try:
+            val = int(digits)
+        except ValueError:
+            await message.answer("Нужно число 0-99.")
+            return
+        if val < 0 or val > 99:
+            await message.answer("Копейки должны быть 0-99.")
+            return
+        tmp["debt_kopeks"] = f"{val:02d}"
+    await state.update_data(creditor_tmp=tmp)
+    await state.set_state(CreditorsFill.note)
+    await message.answer("Основание/комментарий (например: выписка ОКБ) (можно '-' чтобы пропустить).")
+
+
+@dp.message(CreditorsFill.note)
+async def creditors_step_note(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    data = await state.get_data()
+    cid = int(data.get("card_case_id"))
+    tmp = data.get("creditor_tmp") or {}
+
+    if txt != "-" and txt:
+        tmp["note"] = txt
+
+    # сохранить в карточку
+    card = get_case_card(message.from_user.id, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list):
+        creditors = []
+    creditors.append(tmp)
+    card["creditors"] = creditors
+    upsert_case_card(message.from_user.id, cid, card)
+
+    await state.clear()
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить ещё", callback_data=f"creditors:add:{cid}")
+    kb.button(text="✅ Готово", callback_data=f"case:creditors:{cid}")
+    kb.adjust(1)
+
+    await message.answer(
+        f"✅ Кредитор добавлен. Сейчас в списке: {len(creditors)}",
+        reply_markup=kb.as_markup(),
+    )
 
 @dp.callback_query(lambda c: c.data.startswith("case:edit:"))
 async def case_edit_start(call: CallbackQuery, state: FSMContext):
