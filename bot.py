@@ -111,6 +111,7 @@ def build_docx_from_template(template_path: str, owner_user_id: int, case_row: t
         "notes": notes or "-",
         "created_at": created_at,
         "updated_at": updated_at,
+        "debtor_phone": debtor_phone,
     }
 
     if _doc_has_placeholders(doc):
@@ -467,78 +468,176 @@ def _replace_placeholders_strong(doc: Document, mapping: Dict[str, Any]) -> None
 def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
     Генерация заявления о банкротстве по шаблону.
-    Надёжная подстановка {{placeholders}} даже если Word разорвал их по runs.
+    Подстановка строго по 23 плейсхолдерам шаблона + дефолты для пустых данных.
     """
     cid = case_row[0]
 
     template_path = Path("templates/petitions/bankruptcy_petition.docx")
     doc = Document(template_path)
 
-    gender_forms = build_gender_forms(card.get("debtor_gender"))
-    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+    # --- дефолты ---
+    def _txt(v: Any) -> str:
+        v = "" if v is None else str(v).strip()
+        return v if v else "не указано"
+
+    def _money_rubles(v: Any) -> str:
+        v = "" if v is None else str(v).strip()
+        return v if v else "0"
+
+    def _money_kopeks(v: Any) -> str:
+        if v is None or str(v).strip() == "":
+            return "00"
+        try:
+            return f"{int(str(v).strip()):02d}"
+        except Exception:
+            s = str(v).strip()
+            digits = "".join(ch for ch in s if ch.isdigit())
+            if digits == "":
+                return "00"
+            try:
+                return f"{int(digits):02d}"
+            except Exception:
+                return "00"
+
+    # --- исходные данные ---
+    court_name = _txt(card.get("court_name") or (case_row[4] if len(case_row) > 4 else None))
+    court_address = _txt(card.get("court_address"))
+
+    financial_manager_info = _txt(
+        card.get("financial_manager_info") or (case_row[6] if len(case_row) > 6 else None)
+    )
+
+    debtor_full_name = _txt(card.get("debtor_full_name"))
+    debtor_address = _txt(card.get("debtor_address"))
+    debtor_birth_date = _txt(card.get("debtor_birth_date"))
+    debtor_inn = _txt(card.get("debtor_inn"))
+    debtor_snils = _txt(card.get("debtor_snils"))
+    debtor_phone = _txt(card.get("debtor_phone"))
+
+    passport_series = (card.get("passport_series") or "").strip()
+    passport_number = (card.get("passport_number") or "").strip()
+    debtor_passport = _txt(f"{passport_series} {passport_number}".strip())
+
+    debtor_passport_issued_by = _txt(card.get("passport_issued_by"))
+    debtor_passport_date = _txt(card.get("passport_date"))
+    debtor_passport_code = _txt(card.get("passport_code"))
+
+    raw_marital = card.get("marital_status")
+    raw_marital = ("" if raw_marital is None else str(raw_marital)).strip().lower()
+
+    marital_map = {
+        "married": "Состоит в зарегистрированном браке.",
+        "single": "В браке не состоит.",
+        "divorced": "Брак расторгнут.",
+        "widowed": "Вдовец/вдова.",
+    }
+
+    # Если уже введён нормальный русский текст — оставляем как есть
+    if raw_marital in marital_map:
+        marital_status = marital_map[raw_marital]
+    else:
+        # если строка пустая -> дефолт "не указано"
+        # если строка не пустая (в т.ч. русский текст) -> используем как есть
+        marital_status = _txt(raw_marital)
 
     certificate_number = card.get("certificate_number") or card.get("marriage_certificate_number")
     certificate_date = card.get("certificate_date") or card.get("marriage_certificate_date")
+    certificate_number = _txt(certificate_number)
+    certificate_date = _txt(certificate_date)
+
+    total_debt_rubles = _money_rubles(card.get("total_debt_rubles"))
+    total_debt_kopeks = _money_kopeks(card.get("total_debt_kopeks"))
+
+    deposit_deferral_request = card.get("deposit_deferral_request") or ""
+    # attachments_list по утверждённым дефолтам должен быть пустым, если нет данных
+    attachments_list = ""
+    try:
+        built_attachments = build_attachments_list(card)
+        if built_attachments and str(built_attachments).strip():
+            attachments_list = str(built_attachments)
+    except Exception:
+        attachments_list = ""
+
+    # creditors_block: creditors_text приоритетно, иначе список, иначе нейтральный текст
+    creditors_text = card.get("creditors_text")
+    creditors_text = str(creditors_text).strip() if creditors_text is not None else ""
+    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+    if creditors_text:
+        creditors_block = creditors_text
+    elif creditors:
+        creditors_block = build_creditors_block(creditors)
+    else:
+        creditors_block = "Сведения о кредиторах не представлены."
+
+    # vehicle_block: дефолт при отсутствии
+    vehicle_block = ""
+    try:
+        vehicle_block = build_vehicle_block(card) or ""
+    except Exception:
+        vehicle_block = ""
+    if not str(vehicle_block).strip():
+        vehicle_block = "Транспортные средства: отсутствуют."
 
     mapping = {
-        # Базовые поля дела / суда
-        "court_name": case_row[4] or "",
-        "financial_manager_info": case_row[6] or "",
-
-        # Адрес суда из карточки
-        "court_address": card.get("court_address") or "",
-
-        # Данные должника
-        "debtor_full_name": card.get("debtor_full_name") or "",
-        "debtor_last_name_initials": build_debtor_last_name_initials(card),
-        "debtor_address": card.get("debtor_address") or "",
-        "debtor_birth_date": card.get("debtor_birth_date") or "",
-        "debtor_inn": card.get("debtor_inn") or "",
-        "debtor_snils": card.get("debtor_snils") or "",
-        "debtor_phone_or_absent": card.get("debtor_phone") or "отсутствует",
-        "debtor_inn_or_absent": card.get("debtor_inn") or "отсутствует",
-        "debtor_snils_or_absent": card.get("debtor_snils") or "отсутствует",
-
-        # Паспорт
-        "passport_series": card.get("passport_series") or "",
-        "passport_number": card.get("passport_number") or "",
-        "passport_issued_by": card.get("passport_issued_by") or "",
-        "passport_date": card.get("passport_date") or "",
-        "passport_code": card.get("passport_code") or "",
-
-        # Семья / дети
-        "family_status_block": build_family_status_block(card),
-
-        # Кредиторы
-        "creditors_header_block": build_creditors_header_block(creditors),
-        "creditors_block": build_creditors_block(creditors),
-
-        # Транспорт
-        "vehicle_block": build_vehicle_block(card),
-
-        # Сумма долга
-        "total_debt_rubles": str(card.get("total_debt_rubles") or ""),
-        "total_debt_kopeks": f"{int(card.get('total_debt_kopeks') or 0):02d}",
-
-        # Депозит/рассрочка
-        "deposit_deferral_request": card.get("deposit_deferral_request") or "",
-
-        # Приложения
-        "attachments_list": build_attachments_list(card),
-
-        # Свидетельства
-        "certificate_number": certificate_number or "",
-        "certificate_date": certificate_date or "",
-
-        # Текущая дата
+        # 23 плейсхолдера шаблона — ключи должны совпадать 1:1
+        "attachments_list": attachments_list,
+        "certificate_date": certificate_date,
+        "certificate_number": certificate_number,
+        "court_address": court_address,
+        "court_name": court_name,
+        "creditors_block": creditors_block,
         "date": datetime.now().strftime("%d.%m.%Y"),
+        "debtor_address": debtor_address,
+        "debtor_birth_date": debtor_birth_date,
+        "debtor_full_name": debtor_full_name,
+        "debtor_inn": debtor_inn,
+        "debtor_passport_code": debtor_passport_code,
+        "debtor_passport_date": debtor_passport_date,
+        "debtor_passport_issued_by": debtor_passport_issued_by,
+        "debtor_passport": debtor_passport,
+        "debtor_phone": debtor_phone,
+        "debtor_snils": debtor_snils,
+        "deposit_deferral_request": deposit_deferral_request,
+        "financial_manager_info": financial_manager_info,
+        "marital_status": marital_status,
+        "total_debt_kopeks": total_debt_kopeks,
+        "total_debt_rubles": total_debt_rubles,
+        "vehicle_block": vehicle_block,
     }
 
-    # гендерные формы: debtor_having_word, debtor_asked_word и т.п.
-    for k, v in gender_forms.items():
-        mapping[k] = v
-
     _replace_placeholders_strong(doc, mapping)
+    # второй проход — добиваем плейсхолдеры, разорванные Word по runs
+    for p in doc.paragraphs:
+        for run in p.runs:
+            if "{{" in run.text:
+                for k, v in mapping.items():
+                    run.text = run.text.replace(f"{{{{{k}}}}}", "" if v is None else str(v))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        if "{{" in run.text:
+                            for k, v in mapping.items():
+                                run.text = run.text.replace(f"{{{{{k}}}}}", "" if v is None else str(v))
+
+
+    # Контроль: не должно остаться {{...}}
+    def _has_unreplaced_placeholders(d: Document) -> bool:
+        for p in d.paragraphs:
+            if "{{" in (p.text or ""):
+                return True
+        for t in d.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        if "{{" in (p.text or ""):
+                            return True
+        return False
+
+    if _has_unreplaced_placeholders(doc):
+        raise ValueError("В документе остались не заменённые плейсхолдеры вида {{...}}")
 
     fname = f"bankruptcy_petition_case_{cid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
     case_dir = GENERATED_DIR / "cases" / str(cid)
