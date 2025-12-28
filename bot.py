@@ -73,11 +73,6 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 BANKRUPTCY_TEMPLATE_PATH = Path("templates/petitions/bankruptcy_petition.docx")
 
 DOCUMENTS = {
-    "online_hearing": {
-        "title": "Ходатайство о ВКС",
-        "template": "templates/motions/online_hearing.docx",
-        "output_prefix": "online_hearing",
-    },
     "bankruptcy_petition": {
         "title": "Заявление о банкротстве",
         "template": "templates/petitions/bankruptcy_petition.docx",
@@ -298,7 +293,22 @@ def build_family_status_block(card: dict) -> str:
 
 
 def build_creditors_header_block(creditors: list[dict] | None) -> str:
-    return "Сведения о кредиторах:" if creditors else ""
+    if not isinstance(creditors, list) or not creditors:
+        return ""
+
+    names: list[str] = []
+    for c in creditors:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if name:
+            names.append(name)
+
+    if not names:
+        return ""
+
+    return "Сведения о кредиторах:\n" + ";\n".join(names) + "."
+
 
 def build_creditors_block(creditors: list[dict] | None) -> str:
     """
@@ -400,6 +410,44 @@ def build_creditors_block(creditors: list[dict] | None) -> str:
 
     return "\n".join(lines)
 
+def sum_creditors_total(creditors: list[dict] | None) -> tuple[int, int]:
+    """
+    Возвращает (rubles, kopeks) как сумму по всем кредиторам.
+    Поддерживает оба формата:
+      - obligations: [{amount_rubles, amount_kopeks, ...}]
+      - debt_rubles / debt_kopeks
+    """
+    if not isinstance(creditors, list) or not creditors:
+        return (0, 0)
+
+    def _to_int(x) -> int:
+        if x is None:
+            return 0
+        s = "".join(ch for ch in str(x) if ch.isdigit())
+        return int(s) if s else 0
+
+    total_k = 0
+
+    for c in creditors:
+        if not isinstance(c, dict):
+            continue
+
+        obs = c.get("obligations")
+        if isinstance(obs, list) and any(isinstance(o, dict) for o in obs):
+            for ob in obs:
+                if not isinstance(ob, dict):
+                    continue
+                r = _to_int(ob.get("amount_rubles"))
+                k = _to_int(ob.get("amount_kopeks"))
+                total_k += r * 100 + k
+            continue
+
+        # новый формат
+        r = _to_int(c.get("debt_rubles"))
+        k = _to_int(c.get("debt_kopeks"))
+        total_k += r * 100 + k
+
+    return (total_k // 100, total_k % 100)
 
 def build_vehicle_block(card: dict) -> str:
     """
@@ -417,7 +465,7 @@ def build_vehicle_block(card: dict) -> str:
         vehicles.append(one)
 
     if not vehicles:
-        return "Отсутствует"
+        return "Транспортные средства отсутствуют."
 
     lines: list[str] = []
     for i, v in enumerate(vehicles, start=1):
@@ -655,6 +703,11 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     raw_marital = card.get("marital_status")
     raw_marital = ("" if raw_marital is None else str(raw_marital)).strip().lower()
 
+    debtor_address = (debtor_address or "").strip()
+    while ",," in debtor_address:
+        debtor_address = debtor_address.replace(",,", ",")
+    debtor_address = debtor_address.rstrip(" ,")
+
     marital_map = {
         "married": "Состоит в зарегистрированном браке.",
         "single": "В браке не состоит.",
@@ -675,8 +728,15 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     certificate_number = _txt(certificate_number)
     certificate_date = _txt(certificate_date)
 
-    total_debt_rubles = _money_rubles(card.get("total_debt_rubles"))
-    total_debt_kopeks = _money_kopeks(card.get("total_debt_kopeks"))
+    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+
+    auto_r, auto_k = sum_creditors_total(creditors)
+    if auto_r or auto_k:
+        total_debt_rubles = str(auto_r)
+        total_debt_kopeks = f"{auto_k:02d}"
+    else:
+        total_debt_rubles = _money_rubles(card.get("total_debt_rubles"))
+        total_debt_kopeks = _money_kopeks(card.get("total_debt_kopeks"))
 
     deposit_deferral_request = card.get("deposit_deferral_request") or ""
     # attachments_list по утверждённым дефолтам должен быть пустым, если нет данных
@@ -714,6 +774,26 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         vehicle_block = ""
     if not str(vehicle_block).strip():
         vehicle_block = "Транспортные средства: отсутствуют."
+
+    # --- статус ИП (умная логика: справка или ЕГРИП) ---
+    ip_cert_number = (card.get("ip_certificate_number") or "").strip()
+    ip_cert_date = (card.get("ip_certificate_date") or "").strip()
+
+    if ip_cert_number and ip_cert_date:
+        ip_status_text = (
+            "не зарегистрирован в качестве индивидуального предпринимателя, "
+            f"что подтверждается справкой № {ip_cert_number} от {ip_cert_date}."
+        )
+    else:
+        ip_status_text = (
+            "не зарегистрирован в качестве индивидуального предпринимателя, "
+            "что подтверждается сведениями из ЕГРИП"
+        )
+
+    # нормализация, чтобы не было 'ЕГРИП..'
+    ip_status_text = (ip_status_text or "").strip()
+    while ".." in ip_status_text:
+        ip_status_text = ip_status_text.replace("..", ".")
 
     mapping = {
         "attachments_list": attachments_list,
@@ -753,6 +833,7 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
 
         "financial_manager_info": financial_manager_info,
         "family_status_block": build_family_status_block(card),
+        "ip_status_text": ip_status_text,
 
         "marital_status": marital_status,
 
@@ -1593,7 +1674,6 @@ async def case_docs(call: CallbackQuery, state: FSMContext):
     # клавиатура: сначала генерация, потом архив
     kb = InlineKeyboardBuilder()
     kb.button(text="🧾 Сформировать заявление о банкротстве (новое)", callback_data=f"case:gen:{case_id}:petition")
-    kb.button(text="📹 Сформировать ходатайство о ВКС (новое)", callback_data=f"case:gen:{case_id}:online")
     kb.button(text="🔙 Назад", callback_data=f"case:open:{case_id}")
 
     if files:
@@ -1609,15 +1689,16 @@ async def case_docs(call: CallbackQuery, state: FSMContext):
             "Нажми кнопку ниже, чтобы сформировать новый документ (он сохранится в архив).",
             reply_markup=kb.as_markup(),
         )
-        await call.answer()
+        if hasattr(call, "answer"):
+            await call.answer()
         return
 
     await call.message.answer(
         f"📎 Документы по делу #{case_id} (последние сверху):",
         reply_markup=kb.as_markup(),
     )
-    await call.answer()
-
+    if hasattr(call, "answer"):
+        await call.answer()
 
 @dp.callback_query(F.data.startswith("case:file:"))
 async def case_file_send(call: CallbackQuery):
@@ -1714,12 +1795,6 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
             caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
         )
 
-    elif doc_kind == "online":
-        path = build_online_hearing_docx(case_row)
-        await call.message.answer_document(
-            FSInputFile(path),
-            caption=f"Готово ✅ Ходатайство о ВКС (дело #{case_id})",
-        )
     else:
         await call.message.answer("Неизвестный тип документа.")
         await call.answer()
@@ -1833,44 +1908,6 @@ async def docs_case_selected(call: CallbackQuery, state: FSMContext):
         await call.message.answer(
             f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇",
             reply_markup=docs_menu_ikb(cid),
-    )
-    await call.answer()
-
-
-
-@dp.callback_query(lambda c: c.data.startswith("docs:gen:"))
-async def docs_generate(call: CallbackQuery, state: FSMContext):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    parts = call.data.split(":", 2)
-    doc_key = parts[2] if len(parts) == 3 else ""
-    if doc_key != "online_hearing":
-        await call.message.answer("Документ не найден")
-        await call.answer()
-        return
-
-    cid = await _selected_case_id(state)
-    if cid is None:
-        await call.message.answer("Сначала выбери дело…")
-        await docs_choose_case(call)
-        await call.answer()
-        return
-
-    case_row = get_case(uid, cid)
-    if not case_row:
-        await state.update_data(docs_case_id=None)
-        await call.message.answer("Дело не найдено. Выбери его заново.")
-        await docs_choose_case(call)
-        await call.answer()
-        return
-
-    path = build_online_hearing_docx(case_row)
-    await call.message.answer_document(
-        FSInputFile(path),
-        caption=f"Готово ✅ Ходатайство о ВКС (дело #{cid})",
     )
     await call.answer()
 
@@ -2040,15 +2077,6 @@ async def doc_test(message: Message):
     if not case_row:
         await message.answer("Не нашёл дело для теста.")
         return
-
-    meta = DOCUMENTS["online_hearing"]
-    path = build_docx_from_template(
-        meta["template"], uid, case_row, meta["output_prefix"]
-    )
-    await message.answer_document(
-        FSInputFile(path), caption=f"Тестовый документ {meta['title']} для дела #{cid}"
-    )
-
 
 @dp.callback_query(lambda c: c.data == "case:new")
 async def case_new(call: CallbackQuery, state: FSMContext):
@@ -2272,10 +2300,6 @@ async def case_list(call: CallbackQuery):
         st = stage or "-"
         lines.append(f"#{cid} | {code_name} | № {num} | стадия: {st}")
         kb.button(text=f"Открыть #{cid}", callback_data=f"case:open:{cid}")
-        kb.button(
-            text="🗂 Заполнить карточку дела",
-            callback_data=f"card:fill:{cid}"
-        )
         kb.button(text="🗂 Заполнить карточку дела", callback_data = f"case:card:{cid}")
 
     kb.button(text="🔙 Назад", callback_data="back:cases")
@@ -2373,7 +2397,6 @@ async def case_card_open(call: CallbackQuery, state: FSMContext):
     await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
-
 CASE_CARD_FIELDS = [
     (
         "court_name",
@@ -2404,80 +2427,132 @@ CASE_CARD_FIELDS = [
         },
     ),
     (
-        "debtor_full_name",
+        "debtor_middle_name",
         {
-            "title": "ФИО должника",
-            "prompt": "Укажи полное ФИО должника.",
+            "title": "Отчество должника",
+            "prompt": "Укажи отчество должника или '-' если нет.",
         },
     ),
     (
         "debtor_gender",
         {
             "title": "Пол должника",
-            "prompt": "Пол должника (м/ж или male/female).",
+            "prompt": "Укажи пол должника: м/ж.",
         },
     ),
     (
         "debtor_birth_date",
         {
             "title": "Дата рождения",
-            "prompt": "Дата рождения должника (ДД.ММ.ГГГГ).",
+            "prompt": "Укажи дату рождения: ДД.ММ.ГГГГ.",
         },
     ),
     (
         "debtor_address",
         {
             "title": "Адрес должника",
-            "prompt": "Адрес регистрации должника.",
+            "prompt": "Укажи адрес должника.",
+        },
+    ),
+    (
+        "debtor_phone",
+        {
+            "title": "Телефон должника",
+            "prompt": "Укажи телефон должника (можно в формате +7...) или '-' если отсутствует.",
+        },
+    ),
+    (
+        "debtor_inn",
+        {
+            "title": "ИНН должника",
+            "prompt": "Укажи ИНН или '-' если отсутствует.",
+        },
+    ),
+    (
+        "debtor_snils",
+        {
+            "title": "СНИЛС должника",
+            "prompt": "Укажи СНИЛС или '-' если отсутствует.",
         },
     ),
     (
         "passport_series",
         {
-            "title": "Серия паспорта",
-            "prompt": "Укажи серию паспорта (4 цифры).",
+            "title": "Паспорт серия",
+            "prompt": "Укажи серию паспорта (4 цифры) или '-' если отсутствует.",
         },
     ),
     (
         "passport_number",
         {
-            "title": "Номер паспорта",
-            "prompt": "Укажи номер паспорта (6 цифр).",
+            "title": "Паспорт номер",
+            "prompt": "Укажи номер паспорта (6 цифр) или '-' если отсутствует.",
         },
     ),
     (
         "passport_issued_by",
         {
             "title": "Кем выдан паспорт",
-            "prompt": "Кем выдан паспорт (полностью).",
+            "prompt": "Укажи кем выдан паспорт или '-' если отсутствует.",
         },
     ),
     (
         "passport_date",
         {
             "title": "Дата выдачи паспорта",
-            "prompt": "Дата выдачи паспорта (ДД.ММ.ГГГГ).",
+            "prompt": "Укажи дату выдачи: ДД.ММ.ГГГГ или '-' если отсутствует.",
         },
     ),
     (
         "passport_code",
         {
             "title": "Код подразделения",
-            "prompt": "Код подразделения (например 123-456).",
+            "prompt": "Укажи код подразделения (XXX-XXX) или '-' если отсутствует.",
+        },
+    ),
+    (
+        "marital_status",
+        {
+            "title": "Семейное положение",
+            "prompt": "Укажи семейное положение (женат/замужем/не состоит и т.п.) или '-' если неизвестно.",
+        },
+    ),
+    (
+        "certificate_number",
+        {
+            "title": "Свидетельство (номер)",
+            "prompt": "Укажи номер свидетельства (о браке/разводе) или '-' если не применимо.",
+        },
+    ),
+    (
+        "certificate_date",
+        {
+            "title": "Свидетельство (дата)",
+            "prompt": "Укажи дату свидетельства: ДД.ММ.ГГГГ или '-' если не применимо.",
         },
     ),
     (
         "total_debt_rubles",
         {
-            "title": "Сумма долга (руб.)",
-            "prompt": "Общая сумма долга в рублях (целое число).",
+            "title": "Сумма долга (рубли)",
+            "prompt": "Укажи сумму долга в рублях (целое число).",
         },
     ),
     (
         "total_debt_kopeks",
         {
-            "title": "Сумма долга (коп.)",
-            "prompt": "Копейки (0-99).",
+            "title": "Сумма долга (копейки)",
+            "prompt": "Укажи копейки (0-99).",
+        },
+    ),
+
+    # ВАЖНО: это не обычное поле ввода, а отдельное меню кредиторов.
+    # Мы будем перехватывать этот key в обработчике клика по полю.
+    (
+        "creditors",
+        {
+            "title": "🏦 Кредиторы (список)",
+            "prompt": "Открываю меню кредиторов…",
         },
     ),
 ]
@@ -2597,7 +2672,6 @@ async def case_card_menu(call: CallbackQuery, state: FSMContext):
     await send_card_fill_menu(call.message, uid, cid)
     await call.answer()
 
-
 @dp.callback_query(lambda c: c.data.startswith("case:card_edit:"))
 async def case_card_edit(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
@@ -2618,14 +2692,21 @@ async def case_card_edit(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
+    # ✅ ВАЖНО: creditors — это НЕ текстовое поле, а отдельное меню
+    if field == "creditors":
+        await state.clear()
+        await state.update_data(card_case_id=cid)
+        await send_creditors_menu(call.message, uid, cid)
+        await call.answer()
+        return
+
     await state.clear()
     await state.update_data(card_cid=cid, card_field=field)
     await state.set_state(CaseCardFill.waiting_value)
 
-    prompt = CASE_CARD_FIELD_META[field]["prompt"]
+    prompt = CASE_CARD_FIELD_META[field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
     await call.message.answer(prompt)
     await call.answer()
-
 
 @dp.callback_query(lambda c: c.data.startswith("card:fill:"))
 async def card_fill_start(call: CallbackQuery, state: FSMContext):
@@ -2668,7 +2749,6 @@ async def card_fill_start(call: CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-
 @dp.callback_query(lambda c: c.data.startswith("case:cardfield:"))
 async def card_field_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
@@ -2683,6 +2763,14 @@ async def card_field_start(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
+    # Кредиторы — отдельное меню, не обычный ввод текста
+    if field == "creditors":
+        await state.clear()
+        await state.update_data(card_case_id=cid)
+        await send_creditors_menu(call.message, uid, cid)
+        await call.answer()
+        return
+
     await state.clear()
     await state.update_data(card_case_id=cid, card_field_key=field)
     await state.set_state(CaseCardFill.waiting_value)
@@ -2690,7 +2778,6 @@ async def card_field_start(call: CallbackQuery, state: FSMContext):
     prompt = CASE_CARD_FIELD_META[field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
     await call.message.answer(prompt)
     await call.answer()
-
 
 def _normalize_card_input(field: str, text: str) -> tuple[bool, str | int | None, str | None]:
     cleaned = text.strip()
