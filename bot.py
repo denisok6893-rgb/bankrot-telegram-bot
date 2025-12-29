@@ -28,6 +28,7 @@ from keyboards import (
     help_ikb,
     docs_menu_ikb,
     case_files_ikb,
+    case_archive_ikb,
 )
 
 class CaseCreate(StatesGroup):
@@ -1671,16 +1672,14 @@ async def case_docs(call: CallbackQuery, state: FSMContext):
             reverse=True,
         )
 
-    # клавиатура: сначала генерация, потом архив
+    # клавиатура: генерация + последний документ + архив
     kb = InlineKeyboardBuilder()
     kb.button(text="🧾 Сформировать заявление о банкротстве (новое)", callback_data=f"case:gen:{case_id}:petition")
-    kb.button(text="🔙 Назад", callback_data=f"case:open:{case_id}")
-
     if files:
-        kb.button(text="—— Архив документов ——", callback_data="noop")
-        for fn in files[:20]:
-            kb.button(text=f"📎 {fn}", callback_data=f"case:file:{case_id}:{fn}")
-
+        latest = files[0]
+        kb.button(text="📎 Последний документ", callback_data=f"case:lastdoc:{case_id}")
+        kb.button(text="📚 Архив документов", callback_data=f"case:archive:{case_id}:1")
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
     kb.adjust(1)
 
     if not files:
@@ -1699,6 +1698,143 @@ async def case_docs(call: CallbackQuery, state: FSMContext):
     )
     if hasattr(call, "answer"):
         await call.answer()
+
+@dp.callback_query(F.data.startswith("case:lastdoc:"))
+async def case_lastdoc_send(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    if not case_dir.is_dir():
+        await call.message.answer("Документы не найдены.")
+        await call.answer()
+        return
+
+    files = sorted(
+        [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+        reverse=True,
+    )
+    if not files:
+        await call.message.answer("Документы не найдены.")
+        await call.answer()
+        return
+
+    path = case_dir / files[0]
+    if not path.is_file():
+        await call.message.answer("Файл не найден (возможно, удалён).")
+        await call.answer()
+        return
+
+    await call.message.answer_document(FSInputFile(path), caption=f"Последний документ по делу #{case_id}")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("case:archive:"))
+async def case_archive(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    try:
+        page = int(parts[3])
+    except ValueError:
+        page = 1
+    if page < 1:
+        page = 1
+
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    files_all = []
+    if case_dir.is_dir():
+        files_all = sorted(
+            [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+            reverse=True,
+        )
+
+    archive_files = files_all[1:] if len(files_all) > 1 else []
+    per_page = 10
+    total = len(archive_files)
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    chunk = archive_files[start:end]
+
+    kb = InlineKeyboardBuilder()
+    if not chunk:
+        kb.button(text="(архив пуст)", callback_data="noop")
+    else:
+        for i, name in enumerate(chunk, start=start):
+            kb.button(text=f"📎 {name}", callback_data=f"case:fileidx:{case_id}:{i}")
+
+    if page > 1:
+        kb.button(text="⬅️ Назад", callback_data=f"case:archive:{case_id}:{page-1}")
+    if page < max_page:
+        kb.button(text="➡️ Далее", callback_data=f"case:archive:{case_id}:{page+1}")
+
+    kb.button(text="🔙 Назад к документам", callback_data=f"case:docs:{case_id}")
+    kb.adjust(1)
+
+    await call.message.answer(
+        f"📚 Архив документов по делу #{case_id} (стр. {page}/{max_page})",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("case:fileidx:"))
+async def case_file_send_by_index(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    try:
+        idx = int(parts[3])
+    except ValueError:
+        await call.answer()
+        return
+
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    files_all = []
+    if case_dir.is_dir():
+        files_all = sorted(
+            [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+            reverse=True,
+        )
+
+    archive_files = files_all[1:] if len(files_all) > 1 else []
+    if idx < 0 or idx >= len(archive_files):
+        await call.message.answer("Файл не найден (возможно, архив изменился). Открой архив заново.")
+        await call.answer()
+        return
+
+    filename = archive_files[idx]
+    path = case_dir / filename
+    if not path.is_file():
+        await call.message.answer("Файл не найден (возможно, удалён).")
+        await call.answer()
+        return
+
+    await call.message.answer_document(FSInputFile(path))
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("case:file:"))
 async def case_file_send(call: CallbackQuery):
@@ -1966,7 +2102,6 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
     )
     await call.answer()
-
 
 @dp.callback_query(lambda c: c.data.startswith("case:file:"))
 async def case_file_send(call: CallbackQuery):

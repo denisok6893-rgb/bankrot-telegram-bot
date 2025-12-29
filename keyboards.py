@@ -57,8 +57,10 @@ def case_card_ikb(case_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Документы по делу", callback_data=f"case:docs:{case_id}")
     kb.button(text="✏️ Редактирование карточки", callback_data=f"case:edit:{case_id}")
+    kb.button(text="💬 Помощь по делу (ИИ)", callback_data=f"case:help:{case_id}")
+    kb.button(text="⚖️ Судебные акты по делу", callback_data=f"case:rulings:{case_id}")
     kb.button(text="🔙 Назад", callback_data="profile:cases")
-    kb.adjust(1, 1, 1)
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -135,3 +137,21 @@ def case_files_ikb(case_id: int, filenames: list[str]) -> InlineKeyboardMarkup:
     kb.button(text="🔙 Назад", callback_data=f"case:open:{case_id}")
     kb.adjust(1)
     return kb.as_markup()
+
+def case_archive_ikb(case_id: int, filenames: list[str], page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
+    """Архив документов по делу с пагинацией."""
+    kb = InlineKeyboardBuilder()
+    for name in filenames:
+        label = _pretty_doc_label(name)
+        kb.button(text=f"📄 {label}", callback_data=f"case:file:{case_id}:{name}")
+
+    # навигация страниц
+    if has_prev:
+        kb.button(text="⬅️ Назад", callback_data=f"case:archive:{case_id}:{page-1}")
+    if has_next:
+        kb.button(text="➡️ Далее", callback_data=f"case:archive:{case_id}:{page+1}")
+
+    kb.button(text="🔙 Назад", callback_data=f"case:docs:{case_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
