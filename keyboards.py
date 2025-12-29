@@ -44,6 +44,7 @@ def profile_ikb() -> InlineKeyboardMarkup:
 
 def cases_list_ikb(cases: list[tuple]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Создать дело", callback_data="case:new")
     for row in cases:
         cid = row[0]
         title = row[1] or f"Дело #{cid}"
