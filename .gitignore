@@ -33,3 +33,6 @@ generated/
 # sqlite temp files
 *.db-wal
 *.db-shm
+
+# local patch drafts
+/_patches/
