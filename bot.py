@@ -3464,7 +3464,15 @@ async def case_edit_start(call: CallbackQuery, state: FSMContext):
     }
     title = field_titles.get(field, field)
 
-    await call.message.answer(f"Введи новое значение для «{title}».\nЕсли нужно очистить поле — отправь `-`.")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❌ Отмена", callback_data=f"case:edit:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer(
+        f"Введи новое значение для «{title}».\nЕсли нужно очистить поле — отправь `-`.",
+        reply_markup=kb.as_markup(),
+    )
+
     await call.answer()
 @dp.message(CaseEdit.value)
 async def case_edit_apply(message: Message, state: FSMContext):
@@ -3508,9 +3516,14 @@ async def case_edit_apply(message: Message, state: FSMContext):
         await message.answer("Неизвестное поле для редактирования.")
         await state.clear()
         return
-
     await state.clear()
-    await message.answer("✅ Обновлено. Нажми «🔙 К списку дел» или открой дело снова из списка.")
+
+    # после сохранения — вернуть в меню редактирования карточки
+    fake = type("X", (), {})()
+    fake.from_user = message.from_user
+    fake.data = f"case:edit:{cid}"
+    fake.message = message
+    await case_edit_menu(fake, state)
 
 @dp.message(Command("case_new"))
 async def case_new_cmd(message: Message):
