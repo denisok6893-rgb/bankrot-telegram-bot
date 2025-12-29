@@ -1945,7 +1945,7 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
     await case_docs(fake, state)
     await call.answer()
 
-@dp.callback_query(F.data.startswith("case:edit:"))
+@dp.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 2)
 async def case_edit_menu(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -1956,6 +1956,94 @@ async def case_edit_menu(call: CallbackQuery, state: FSMContext):
 
     await state.clear()
 
+
+    
+
+    # --- EDIT MENU SHELL (no docs, no CaseCardFill) ---
+
+    row = get_case(uid, case_id)
+
+    if not row:
+
+        await call.message.answer("Дело не найдено.")
+
+        await call.answer()
+
+        return
+
+    
+
+    try:
+
+        case_number = row[2] if len(row) > 2 else ""
+
+        stage = row[3] if len(row) > 3 else ""
+
+        court = row[5] if len(row) > 5 else ""
+
+        judge = row[6] if len(row) > 6 else ""
+
+        fin_manager = row[7] if len(row) > 7 else ""
+
+        notes = row[8] if len(row) > 8 else ""
+
+    except Exception:
+
+        case_number = stage = court = judge = fin_manager = notes = ""
+
+    
+
+    text = (
+
+        f"✏️ Редактирование карточки дела #{case_id}\n\n"
+
+        f"Номер дела: {case_number or '—'}\n"
+
+        f"Суд: {court or '—'}\n"
+
+        f"Судья: {judge or '—'}\n"
+
+        f"ФУ: {fin_manager or '—'}\n"
+
+        f"Стадия: {stage or '—'}\n"
+
+        f"Заметки: {notes or '—'}"
+
+    )
+
+    
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="📋 Показать карточку дела", callback_data=f"case:card:{case_id}")
+
+    kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{case_id}:case_number")
+
+    kb.button(text="✏️ Суд", callback_data=f"case:edit:{case_id}:court")
+
+    kb.button(text="✏️ Судья", callback_data=f"case:edit:{case_id}:judge")
+
+    kb.button(text="✏️ ФУ", callback_data=f"case:edit:{case_id}:fin_manager")
+
+    kb.button(text="✏️ Стадия", callback_data=f"case:edit:{case_id}:stage")
+
+    kb.button(text="🗒 Заметки", callback_data=f"case:edit:{case_id}:notes")
+
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
+
+    kb.adjust(1, 2, 2, 2, 1)
+
+    
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+
+    await call.answer()
+
+    return
+
+    # --- /EDIT MENU SHELL ---
+
+    
     card = get_case_card(uid, case_id) or {}
     next_field = None
     for key, _meta in CASE_CARD_FIELDS:
@@ -3345,7 +3433,7 @@ async def creditors_step_note(message: Message, state: FSMContext):
         reply_markup=kb.as_markup(),
     )
 
-@dp.callback_query(lambda c: c.data.startswith("case:edit:"))
+@dp.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 3)
 async def case_edit_start(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     if not is_allowed(uid):
