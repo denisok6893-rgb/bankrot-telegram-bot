@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from bankrot_bot.logging_setup import setup_logging
+from bankrot_bot.services.gigachat import gigachat_chat
 
 import aiohttp
 setup_logging()
@@ -1353,85 +1354,6 @@ def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> 
 
         cur.execute(sql, values)
         con.commit()
-
-# =========================
-# GigaChat (token cache + retry)
-# =========================
-_GC_TOKEN: str | None = None
-_GC_TOKEN_EXPIRES_AT: float = 0.0
-_GC_TOKEN_LOCK = asyncio.Lock()
-
-
-async def get_access_token(session: aiohttp.ClientSession, force_refresh: bool = False) -> str:
-    global _GC_TOKEN, _GC_TOKEN_EXPIRES_AT
-    now = time.time()
-
-    async with _GC_TOKEN_LOCK:
-        if (not force_refresh) and _GC_TOKEN and now < _GC_TOKEN_EXPIRES_AT:
-            return _GC_TOKEN
-
-        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        headers = {
-            "Authorization": f"Basic {AUTH_KEY}",
-            "RqUID": str(uuid.uuid4()),
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-
-        async with session.post(url, headers=headers, data={"scope": SCOPE}, ssl=False, timeout=30) as r:
-            text = await r.text()
-            if r.status != 200:
-                raise RuntimeError(text)
-
-        data = json.loads(text)
-        token = data["access_token"]
-
-        if "expires_in" in data:
-            exp = time.time() + int(data["expires_in"])
-        elif "expires_at" in data:
-            raw = int(data["expires_at"])
-            exp = (raw / 1000) if raw > 10_000_000_000 else raw
-        else:
-            exp = time.time() + 1800
-
-        _GC_TOKEN = token
-        _GC_TOKEN_EXPIRES_AT = float(exp) - 30
-        return _GC_TOKEN
-
-
-async def gigachat_chat(system_prompt: str, user_text: str) -> str:
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
-        "temperature": 0.2,
-    }
-
-    async with aiohttp.ClientSession() as session:
-        token = await get_access_token(session)
-
-        async def _call(tkn: str):
-            headers = {"Authorization": f"Bearer {tkn}", "Content-Type": "application/json"}
-            return await session.post(
-                "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=90,
-                ssl=False,
-            )
-
-        r = await _call(token)
-        if r.status == 401:
-            await r.release()
-            token = await get_access_token(session, force_refresh=True)
-            r = await _call(token)
-
-        if r.status != 200:
-            raise RuntimeError(await r.text())
-
-        data = await r.json()
-        return data["choices"][0]["message"]["content"].strip()
 
 
 # =========================
@@ -3683,7 +3605,13 @@ async def main_text_router(message: Message, state: FSMContext):
         await message.answer("Принял данные. Готовлю проект мирового…")
         try:
             user_text = build_settlement_user_text(flow.get("answers", {}))
-            result = await gigachat_chat(system_prompt_for_settlement(), user_text)
+            result = await gigachat_chat(
+                auth_key=AUTH_KEY,
+                scope=SCOPE,
+                model=MODEL,
+                system_prompt=system_prompt_for_settlement(),
+                user_text=user_text,
+            )
             LAST_RESULT[uid] = result
             await message.answer(result)
             await message.answer("Экспорт 👇", reply_markup=export_keyboard())
