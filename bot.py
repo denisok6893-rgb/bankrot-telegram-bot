@@ -16,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
-from dotenv import load_dotenv
+from bankrot_bot.config import load_settings
 from keyboards import (
     main_menu_kb,
     start_ikb,
@@ -60,26 +60,6 @@ class CreditorsFill(StatesGroup):
 # =========================
 # env
 # =========================
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
-SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro")
-
-RAW_ALLOWED = (os.getenv("ALLOWED_USERS") or "").strip()
-RAW_ADMINS = (os.getenv("ADMIN_USERS") or "").strip()
-GENERATED_DIR = Path("generated")
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-BANKRUPTCY_TEMPLATE_PATH = Path("templates/petitions/bankruptcy_petition.docx")
-
-DOCUMENTS = {
-    "bankruptcy_petition": {
-        "title": "Заявление о банкротстве",
-        "template": "templates/petitions/bankruptcy_petition.docx",
-        "output_prefix": "bankruptcy_petition",
-    },
-}
 
 
 def build_docx_from_template(template_path: str, owner_user_id: int, case_row: tuple) -> Path:
@@ -943,9 +923,18 @@ async def _selected_case_id(state: FSMContext) -> int | None:
 
 DB_PATH = os.getenv("DB_PATH", "/root/bankrot_bot/bankrot.db")
 
-if not BOT_TOKEN or not AUTH_KEY:
-    raise SystemExit("Ошибка: не заполнен .env (BOT_TOKEN / GIGACHAT_AUTH_KEY)")
+settings = load_settings()
 
+BOT_TOKEN = settings["BOT_TOKEN"]
+AUTH_KEY = settings["GIGACHAT_AUTH_KEY"]
+SCOPE = settings["GIGACHAT_SCOPE"]
+MODEL = settings["GIGACHAT_MODEL"]
+
+RAW_ALLOWED = settings["RAW_ALLOWED"]
+RAW_ADMINS = settings["RAW_ADMINS"]
+GENERATED_DIR = settings["GENERATED_DIR"]
+
+DB_PATH = settings["DB_PATH"]
 
 def _parse_ids(s: str) -> set[int]:
     out = set()
