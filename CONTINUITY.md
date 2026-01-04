@@ -16,6 +16,7 @@
 - сервис bankrot-bot перезапущен и активен
 
 - origin = GitHub, sourcecraft = зеркало (push запрещён)
+- добавили bankrot_bot/logging_setup.py, логи пишутся в journalctl и в logs/bankrot-bot.log.
 
 ---
 
