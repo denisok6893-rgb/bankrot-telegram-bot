@@ -7,8 +7,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from bankrot_bot.logging_setup import setup_logging
 
 import aiohttp
+setup_logging()
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
