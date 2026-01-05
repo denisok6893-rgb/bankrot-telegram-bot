@@ -10,6 +10,15 @@ from typing import Any, Dict, List, Tuple
 from bankrot_bot.logging_setup import setup_logging
 from bankrot_bot.services.gigachat import gigachat_chat
 
+
+from bankrot_bot.services.blocks import (
+    build_creditors_header_block,
+    build_creditors_block,
+    sum_creditors_total,
+    build_vehicle_block,
+    build_attachments_list,
+)
+
 import aiohttp
 setup_logging()
 from aiogram import Bot, Dispatcher, F
@@ -65,7 +74,7 @@ class CreditorsFill(StatesGroup):
 # =========================
 
 
-def build_docx_from_template(template_path: str, owner_user_id: int, case_row: tuple) -> Path:
+def _old_build_docx_from_template(template_path: str, owner_user_id: int, case_row: tuple) -> Path:
     """
     Подготовка DOCX через шаблон:
     - если в шаблоне есть {{placeholders}} → подставляем данные
@@ -276,7 +285,7 @@ def build_family_status_block(card: dict) -> str:
     return "\n".join(lines)
 
 
-def build_creditors_header_block(creditors: list[dict] | None) -> str:
+def _old_build_creditors_header_block(creditors: list[dict] | None) -> str:
     if not isinstance(creditors, list) or not creditors:
         return ""
 
@@ -294,7 +303,7 @@ def build_creditors_header_block(creditors: list[dict] | None) -> str:
     return "Сведения о кредиторах:\n" + ";\n".join(names) + "."
 
 
-def build_creditors_block(creditors: list[dict] | None) -> str:
+def _old_build_creditors_block(creditors: list[dict] | None) -> str:
     """
     Поддерживает 2 формата кредиторов:
 
@@ -394,7 +403,7 @@ def build_creditors_block(creditors: list[dict] | None) -> str:
 
     return "\n".join(lines)
 
-def sum_creditors_total(creditors: list[dict] | None) -> tuple[int, int]:
+def _old_sum_creditors_total(creditors: list[dict] | None) -> tuple[int, int]:
     """
     Возвращает (rubles, kopeks) как сумму по всем кредиторам.
     Поддерживает оба формата:
@@ -433,7 +442,7 @@ def sum_creditors_total(creditors: list[dict] | None) -> tuple[int, int]:
 
     return (total_k // 100, total_k % 100)
 
-def build_vehicle_block(card: dict) -> str:
+def _old_build_vehicle_block(card: dict) -> str:
     """
     Если авто нет — 'Отсутствует'.
     Если есть список vehicles или vehicle — печатаем списком.
@@ -464,7 +473,7 @@ def build_vehicle_block(card: dict) -> str:
     return "\n".join(lines)
 
 
-def build_attachments_list(card: dict) -> str:
+def _old_build_attachments_list(card: dict) -> str:
     items: list[str] = []
     if card.get("passport_series") and card.get("passport_number"):
         items.append("Копия паспорта гражданина РФ.")
@@ -559,7 +568,7 @@ def _replace_placeholders_strong(doc: Document, mapping: Dict[str, Any]) -> None
                             for np in ncell.paragraphs:
                                 apply_to_paragraph(np)
 
-def build_online_hearing_docx(case_row: Tuple) -> Path:
+def _old_build_online_hearing_docx(case_row: Tuple) -> Path:
     """
     Генерация ходатайства о ВКС (онлайн-заседание).
     Делает простой DOCX без шаблона, чтобы гарантированно не падать.
@@ -627,7 +636,7 @@ def build_online_hearing_docx(case_row: Tuple) -> Path:
     return out_path
 
 
-def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
+def _old_build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
     Генерация заявления о банкротстве по шаблону.
     Подстановка строго по 23 плейсхолдерам шаблона + дефолты для пустых данных.
