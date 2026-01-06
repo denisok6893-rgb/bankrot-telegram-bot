@@ -29,7 +29,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from bankrot_bot.config import load_settings
-from keyboards import (
+from bankrot_bot.keyboards.menus import (
     main_menu_kb,
     start_ikb,
     home_ikb,
