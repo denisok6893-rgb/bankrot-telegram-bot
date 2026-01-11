@@ -1847,7 +1847,7 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
             await call.answer()
             return
 
-        path = build_bankruptcy_petition_doc(case_row, card)
+        path = _old_build_bankruptcy_petition_doc(case_row, card)
         await call.message.answer_document(
             FSInputFile(path),
             caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
@@ -2106,7 +2106,7 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    path = build_bankruptcy_petition_doc(case_row, card)
+    path = _old_build_bankruptcy_petition_doc(case_row, card)
     await call.message.answer_document(
         FSInputFile(path),
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
@@ -3582,11 +3582,14 @@ async def main_text_router(message: Message, state: FSMContext):
     # Если идёт FSM (создание дела и т.п.) — не мешаем
     if await state.get_state() is not None:
         return
-
     uid = message.from_user.id
     if not is_allowed(uid):
         return
-
+    
+    # ✅ Команды всегда разрешены
+    if message.text and message.text.startswith("/"):
+        return
+    
     if uid not in USER_FLOW:
         await message.answer("Сначала выбери задачу через /start.")
         return
@@ -3640,3 +3643,20 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# =========================
+# HOTFIX: unify main menu
+# =========================
+try:
+    from bankrot_bot.keyboards.menus import main_menu_kb
+except Exception:
+    main_menu_kb = None
+
+def main_keyboard():
+    """
+    Override legacy main_keyboard().
+    Always return new unified menu with '➕ Создать дело'.
+    """
+    if main_menu_kb:
+        return main_menu_kb()
+    raise RuntimeError("main_menu_kb not available")

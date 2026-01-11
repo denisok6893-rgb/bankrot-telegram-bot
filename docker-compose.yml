@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: bankrot_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bankrot}
+      POSTGRES_USER: ${POSTGRES_USER:-bankrot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bankrot_password}
+    volumes:
+      - bankrot_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bankrot} -d ${POSTGRES_DB:-bankrot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bankrot_bot:
+    build: .
+    container_name: bankrot_bot
+    env_file:
+      - .env
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Новый источник истины для приложения (дальше внедрим в код)
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-bankrot}:${POSTGRES_PASSWORD:-bankrot_password}@postgres:5432/${POSTGRES_DB:-bankrot}
+      DB_PATH: /app/bankrot.db
+    volumes:
+      - ./generated:/app/generated
+      - ./logs:/app/logs
+      - ./templates:/app/templates:ro
+      # SQLite оставляем временно, пока не перенесём данные
+      - ./bankrot.db:/app/bankrot.db
+
+volumes:
+  bankrot_pg_data:
