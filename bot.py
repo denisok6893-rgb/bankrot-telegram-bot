@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from bankrot_bot.logging_setup import setup_logging
 from bankrot_bot.services.gigachat import gigachat_chat
+
+logger = logging.getLogger(__name__)
 
 
 from bankrot_bot.services.blocks import (
@@ -25,7 +28,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from bankrot_bot.config import load_settings
@@ -551,14 +554,14 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
             return "00"
         try:
             return f"{int(str(v).strip()):02d}"
-        except Exception:
+        except (ValueError, TypeError):
             s = str(v).strip()
             digits = "".join(ch for ch in s if ch.isdigit())
             if digits == "":
                 return "00"
             try:
                 return f"{int(digits):02d}"
-            except Exception:
+            except (ValueError, TypeError):
                 return "00"
 
     # --- исходные данные ---
@@ -629,7 +632,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         built_attachments = build_attachments_list(card)
         if built_attachments and str(built_attachments).strip():
             attachments_list = str(built_attachments)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build attachments list: {e}")
         attachments_list = ""
 
     # creditors_block: creditors_text приоритетно, иначе список, иначе нейтральный текст
@@ -654,7 +658,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     vehicle_block = ""
     try:
         vehicle_block = build_vehicle_block(card) or ""
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build vehicle block: {e}")
         vehicle_block = ""
     if not str(vehicle_block).strip():
         vehicle_block = "Транспортные средства: отсутствуют."
@@ -735,8 +740,9 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         gender_forms = build_gender_forms(card.get("debtor_gender"))
         if isinstance(gender_forms, dict):
             mapping.update(gender_forms)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
         # если пол не заполнен или функция упала — ставим нейтральные значения
+        logger.warning(f"Failed to build gender forms: {e}")
         mapping.update(
             {
                 "debtor_having_word": "имеющий(ая)",
@@ -960,6 +966,16 @@ def create_case(owner_user_id: int, code_name: str) -> int:
 
 
 def list_cases(owner_user_id: int, limit: int = 20) -> List[Tuple]:
+    """
+    Получить список дел пользователя.
+
+    Args:
+        owner_user_id: ID пользователя-владельца
+        limit: Максимальное количество дел (по умолчанию 20)
+
+    Returns:
+        Список кортежей: (id, code_name, case_number, stage, updated_at)
+    """
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
@@ -971,6 +987,16 @@ def list_cases(owner_user_id: int, limit: int = 20) -> List[Tuple]:
 
 
 def get_case(owner_user_id: int, cid: int) -> Tuple | None:
+    """
+    Получить полную информацию о деле.
+
+    Args:
+        owner_user_id: ID пользователя-владельца
+        cid: ID дела
+
+    Returns:
+        Кортеж с данными дела или None если не найдено
+    """
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
@@ -986,6 +1012,15 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
         return cur.fetchone()
 
 def get_profile(owner_user_id: int) -> tuple | None:
+    """
+    Получить профиль пользователя.
+
+    Args:
+        owner_user_id: ID пользователя
+
+    Returns:
+        Кортеж с данными профиля или None
+    """
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
@@ -1092,6 +1127,15 @@ CASE_CARD_REQUIRED_FIELDS = [
 
 
 def validate_case_card(card: dict[str, Any]) -> dict[str, list[str]]:
+    """
+    Валидация карточки дела.
+
+    Args:
+        card: Словарь с данными карточки дела
+
+    Returns:
+        Словарь с ключом "missing" содержащим список отсутствующих полей
+    """
     missing = []
     for field in CASE_CARD_REQUIRED_FIELDS:
         val = card.get(field)
@@ -1101,6 +1145,7 @@ def validate_case_card(card: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _compose_debtor_full_name(data: dict[str, Any]) -> str | None:
+    """Составляет полное ФИО должника из отдельных полей."""
     last = (data.get("debtor_last_name") or "").strip()
     first = (data.get("debtor_first_name") or "").strip()
     middle = (data.get("debtor_middle_name") or "").strip()
@@ -1109,6 +1154,16 @@ def _compose_debtor_full_name(data: dict[str, Any]) -> str | None:
 
 
 def get_case_card(owner_user_id: int, cid: int) -> dict[str, Any]:
+    """
+    Получить карточку дела с данными должника.
+
+    Args:
+        owner_user_id: ID пользователя-владельца
+        cid: ID дела
+
+    Returns:
+        Словарь с данными карточки дела
+    """
     migrate_case_cards_table()
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
@@ -1129,7 +1184,8 @@ def get_case_card(owner_user_id: int, cid: int) -> dict[str, Any]:
         if raw_data:
             try:
                 base = json.loads(raw_data)
-            except Exception:
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse case card JSON for case_id={cid}: {e}")
                 base = {}
         if court_name and not base.get("court_name"):
             base["court_name"] = court_name
@@ -1168,7 +1224,8 @@ def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> 
         if row and row[0]:
             try:
                 current = json.loads(row[0])
-            except Exception:
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse existing case card JSON for case_id={case_id}: {e}")
                 current = {}
 
         current.update(data)
@@ -1217,7 +1274,8 @@ def cancel_flow(uid: int) -> None:
     USER_FLOW.pop(uid, None)
 
 
-def main_keyboard():
+def main_keyboard() -> InlineKeyboardMarkup:
+    """Главная клавиатура выбора типа документа."""
     kb = InlineKeyboardBuilder()
     kb.button(text="📝 Ходатайство", callback_data="flow:motion")
     kb.button(text="🤝 Мировое соглашение", callback_data="flow:settlement")
@@ -1225,14 +1283,16 @@ def main_keyboard():
     return kb.as_markup()
 
 
-def export_keyboard():
+def export_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура экспорта документа."""
     kb = InlineKeyboardBuilder()
     kb.button(text="📄 Экспорт (показать текст)", callback_data="export:word")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def court_type_keyboard():
+def court_type_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа суда."""
     kb = InlineKeyboardBuilder()
     kb.button(text="Арбитражный суд", callback_data="motion:court:arbitr")
     kb.button(text="Суд общей юрисдикции", callback_data="motion:court:general")
@@ -1240,14 +1300,16 @@ def court_type_keyboard():
     return kb.as_markup()
 
 
-def motion_actions_keyboard():
+def motion_actions_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура действий для ходатайства."""
     kb = InlineKeyboardBuilder()
     kb.button(text="Отмена", callback_data="flow:cancel")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def settlement_actions_keyboard():
+def settlement_actions_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура действий для мирового соглашения."""
     kb = InlineKeyboardBuilder()
     kb.button(text="Отмена", callback_data="flow:cancel")
     kb.adjust(1)
@@ -1745,8 +1807,8 @@ async def case_edit_menu(call: CallbackQuery, state: FSMContext):
 
         notes = row[8] if len(row) > 8 else ""
 
-    except Exception:
-
+    except (IndexError, TypeError) as e:
+        logger.warning(f"Failed to parse case row: {e}")
         case_number = stage = court = judge = fin_manager = notes = ""
 
     
@@ -2628,7 +2690,7 @@ async def send_card_fill_menu(message_target, uid: int, cid: int) -> None:
         creditors_val = card.get("creditors")
         if isinstance(creditors_val, list):
             creditors_count = len(creditors_val)
-    except Exception:
+    except (TypeError, AttributeError):
         creditors_count = 0
 
     kb.button(text=f"👥 Кредиторы ({creditors_count})", callback_data=f"case:creditors:{cid}")
@@ -3560,10 +3622,11 @@ if __name__ == "__main__":
 # =========================
 try:
     from bankrot_bot.keyboards.menus import main_menu_kb
-except Exception:
+except (ImportError, ModuleNotFoundError) as e:
+    logger.warning(f"Failed to import main_menu_kb: {e}")
     main_menu_kb = None
 
-def main_keyboard():
+def main_keyboard() -> InlineKeyboardMarkup:
     """
     Override legacy main_keyboard().
     Always return new unified menu with '➕ Создать дело'.

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 
 from datetime import datetime
@@ -8,6 +9,8 @@ from typing import Any, Dict, Tuple
 from docx import Document
 
 from bankrot_bot.config import load_settings
+
+logger = logging.getLogger(__name__)
 from bankrot_bot.services.blocks import (
     build_creditors_block,
     build_creditors_header_block,
@@ -164,14 +167,14 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
             return "00"
         try:
             return f"{int(str(v).strip()):02d}"
-        except Exception:
+        except (ValueError, TypeError):
             s = str(v).strip()
             digits = "".join(ch for ch in s if ch.isdigit())
             if digits == "":
                 return "00"
             try:
                 return f"{int(digits):02d}"
-            except Exception:
+            except (ValueError, TypeError):
                 return "00"
 
     # --- исходные данные ---
@@ -242,7 +245,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         built_attachments = build_attachments_list(card)
         if built_attachments and str(built_attachments).strip():
             attachments_list = str(built_attachments)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build attachments list: {e}")
         attachments_list = ""
 
     # creditors_block: creditors_text приоритетно, иначе список, иначе нейтральный текст
@@ -267,7 +271,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     vehicle_block = ""
     try:
         vehicle_block = build_vehicle_block(card) or ""
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build vehicle block: {e}")
         vehicle_block = ""
     if not str(vehicle_block).strip():
         vehicle_block = "Транспортные средства: отсутствуют."
@@ -348,8 +353,9 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         gender_forms = build_gender_forms(card.get("debtor_gender"))
         if isinstance(gender_forms, dict):
             mapping.update(gender_forms)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
         # если пол не заполнен или функция упала — ставим нейтральные значения
+        logger.warning(f"Failed to build gender forms: {e}")
         mapping.update(
             {
                 "debtor_having_word": "имеющий(ая)",

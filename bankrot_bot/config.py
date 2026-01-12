@@ -7,16 +7,19 @@ def load_settings():
     """Load settings from .env and return as dict."""
     load_dotenv()
 
+    # Определяем базовую директорию проекта
+    project_root = Path(__file__).parent.parent.resolve()
+
     bot_token = (os.getenv("BOT_TOKEN") or "").strip()
     auth_key = (os.getenv("GIGACHAT_AUTH_KEY") or "").strip()
     scope = (os.getenv("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS").strip()
     model = (os.getenv("GIGACHAT_MODEL") or "GigaChat-2-Pro").strip()
-    db_path = (os.getenv("DB_PATH") or "/root/bankrot_bot/bankrot.db").strip()
+    db_path = (os.getenv("DB_PATH") or str(project_root / "bankrot.db")).strip()
 
     raw_allowed = (os.getenv("ALLOWED_USERS") or "").strip()
     raw_admins = (os.getenv("ADMIN_USERS") or "").strip()
 
-    generated_dir = Path(os.getenv("GENERATED_DIR") or "/root/bankrot_bot/generated")
+    generated_dir = Path(os.getenv("GENERATED_DIR") or str(project_root / "generated"))
     generated_dir.mkdir(parents=True, exist_ok=True)
 
     if not bot_token or not auth_key:
