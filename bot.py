@@ -3637,13 +3637,21 @@ async def main_text_router(message: Message, state: FSMContext):
 async def main():
     init_db()
     bot = Bot(token=BOT_TOKEN)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
+    mode = os.getenv('TELEGRAM_MODE', 'polling').strip().lower()
+    if mode == 'polling':
+        # polling-mode: ensure webhook is disabled
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+        return
+    if mode == 'webhook':
+        # webhook-mode: FastAPI (web.py) receives updates and calls dp.feed_update(...)
+        # keep process alive if someone runs bot.py directly by mistake
+        while True:
+            await asyncio.sleep(3600)
+    raise RuntimeError(f'Unknown TELEGRAM_MODE={mode!r}. Use polling|webhook')
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 # =========================
 # HOTFIX: unify main menu
 # =========================
