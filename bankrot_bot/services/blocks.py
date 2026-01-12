@@ -79,14 +79,14 @@ def sum_creditors_total(creditors: list[dict] | None) -> tuple[int, int]:
 
         try:
             rr = int(str(r).strip()) if str(r).strip() else 0
-        except Exception:
+        except (ValueError, TypeError):
             rr = 0
 
         kk_raw = "" if k is None else str(k).strip()
         digits = "".join(ch for ch in kk_raw if ch.isdigit())
         try:
             kk = int(digits) if digits else 0
-        except Exception:
+        except (ValueError, TypeError):
             kk = 0
 
         total_r += rr

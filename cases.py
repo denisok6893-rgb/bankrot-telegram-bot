@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -6,7 +7,9 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-DB_PATH = "/root/bankrot_bot/bankrot.db"
+# Определяем базовую директорию проекта
+project_root = Path(__file__).parent.resolve()
+DB_PATH = os.getenv("DB_PATH") or str(project_root / "bankrot.db")
 
 router = Router()
 

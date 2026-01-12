@@ -26,7 +26,9 @@ def setup_logging() -> None:
     logger.addHandler(sh)
 
     # файл (ротация)
-    log_dir = Path(os.getenv("LOG_DIR") or "/root/bankrot_bot/logs")
+    # Определяем базовую директорию проекта относительно текущего файла
+    project_root = Path(__file__).parent.parent.resolve()
+    log_dir = Path(os.getenv("LOG_DIR") or str(project_root / "logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     fh = RotatingFileHandler(
         log_dir / "bankrot-bot.log",

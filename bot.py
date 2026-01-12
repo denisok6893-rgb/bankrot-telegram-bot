@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from bankrot_bot.logging_setup import setup_logging
 from bankrot_bot.services.gigachat import gigachat_chat
+
+logger = logging.getLogger(__name__)
 
 
 from bankrot_bot.services.blocks import (
@@ -551,14 +554,14 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
             return "00"
         try:
             return f"{int(str(v).strip()):02d}"
-        except Exception:
+        except (ValueError, TypeError):
             s = str(v).strip()
             digits = "".join(ch for ch in s if ch.isdigit())
             if digits == "":
                 return "00"
             try:
                 return f"{int(digits):02d}"
-            except Exception:
+            except (ValueError, TypeError):
                 return "00"
 
     # --- исходные данные ---
@@ -629,7 +632,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         built_attachments = build_attachments_list(card)
         if built_attachments and str(built_attachments).strip():
             attachments_list = str(built_attachments)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build attachments list: {e}")
         attachments_list = ""
 
     # creditors_block: creditors_text приоритетно, иначе список, иначе нейтральный текст
@@ -654,7 +658,8 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     vehicle_block = ""
     try:
         vehicle_block = build_vehicle_block(card) or ""
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to build vehicle block: {e}")
         vehicle_block = ""
     if not str(vehicle_block).strip():
         vehicle_block = "Транспортные средства: отсутствуют."
@@ -735,8 +740,9 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         gender_forms = build_gender_forms(card.get("debtor_gender"))
         if isinstance(gender_forms, dict):
             mapping.update(gender_forms)
-    except Exception:
+    except (KeyError, TypeError, AttributeError) as e:
         # если пол не заполнен или функция упала — ставим нейтральные значения
+        logger.warning(f"Failed to build gender forms: {e}")
         mapping.update(
             {
                 "debtor_having_word": "имеющий(ая)",
@@ -1129,7 +1135,8 @@ def get_case_card(owner_user_id: int, cid: int) -> dict[str, Any]:
         if raw_data:
             try:
                 base = json.loads(raw_data)
-            except Exception:
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse case card JSON for case_id={cid}: {e}")
                 base = {}
         if court_name and not base.get("court_name"):
             base["court_name"] = court_name
@@ -1168,7 +1175,8 @@ def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> 
         if row and row[0]:
             try:
                 current = json.loads(row[0])
-            except Exception:
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse existing case card JSON for case_id={case_id}: {e}")
                 current = {}
 
         current.update(data)
@@ -1745,8 +1753,8 @@ async def case_edit_menu(call: CallbackQuery, state: FSMContext):
 
         notes = row[8] if len(row) > 8 else ""
 
-    except Exception:
-
+    except (IndexError, TypeError) as e:
+        logger.warning(f"Failed to parse case row: {e}")
         case_number = stage = court = judge = fin_manager = notes = ""
 
     
@@ -2628,7 +2636,7 @@ async def send_card_fill_menu(message_target, uid: int, cid: int) -> None:
         creditors_val = card.get("creditors")
         if isinstance(creditors_val, list):
             creditors_count = len(creditors_val)
-    except Exception:
+    except (TypeError, AttributeError):
         creditors_count = 0
 
     kb.button(text=f"👥 Кредиторы ({creditors_count})", callback_data=f"case:creditors:{cid}")
@@ -3560,7 +3568,8 @@ if __name__ == "__main__":
 # =========================
 try:
     from bankrot_bot.keyboards.menus import main_menu_kb
-except Exception:
+except (ImportError, ModuleNotFoundError) as e:
+    logger.warning(f"Failed to import main_menu_kb: {e}")
     main_menu_kb = None
 
 def main_keyboard():
