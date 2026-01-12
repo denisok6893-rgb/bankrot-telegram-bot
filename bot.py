@@ -32,6 +32,11 @@ from aiogram.types import CallbackQuery, FSInputFile, Message, InlineKeyboardMar
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from bankrot_bot.config import load_settings
+
+# Database and handlers
+from bankrot_bot.database import init_db as init_pg_db
+from bankrot_bot.handlers import cases as cases_handlers
+
 from bankrot_bot.keyboards.menus import (
     main_menu_kb,
     start_ikb,
@@ -1262,9 +1267,15 @@ def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> 
 # =========================
 # bot logic
 # =========================
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 
-dp = Dispatcher(storage=MemoryStorage())
+# Configure Redis storage for FSM
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+storage = RedisStorage.from_url(redis_url)
+dp = Dispatcher(storage=storage)
+
+# Register cases router
+dp.include_router(cases_handlers.router)
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
@@ -3567,7 +3578,13 @@ async def main():
     import logging
     logger = logging.getLogger(__name__)
 
+    # Initialize old SQLite database for existing functionality
     init_db()
+
+    # Initialize new PostgreSQL database for cases module
+    await init_pg_db()
+    logger.info("PostgreSQL database initialized")
+
     bot = Bot(token=BOT_TOKEN)
 
     # Execution mode: polling (default) or webhook
