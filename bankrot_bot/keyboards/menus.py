@@ -151,3 +151,13 @@ def case_archive_ikb(case_id: int, filenames: list[str], page: int, has_prev: bo
     kb.adjust(1)
     return kb.as_markup()
 
+
+def cases_menu_ikb() -> InlineKeyboardMarkup:
+    """Меню раздела «Дела»."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Создать дело", callback_data="case:new")
+    kb.button(text="📋 Список дел", callback_data="case:list")
+    kb.button(text="🔙 Назад", callback_data="menu:profile")
+    kb.adjust(1)
+    return kb.as_markup()
+

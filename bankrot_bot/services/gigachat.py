@@ -33,7 +33,7 @@ async def get_access_token(
             "Content-Type": "application/x-www-form-urlencoded",
         }
 
-        async with session.post(url, headers=headers, data={"scope": scope}, ssl=False, timeout=30) as r:
+        async with session.post(url, headers=headers, data={"scope": scope}, timeout=30) as r:
             text = await r.text()
             if r.status != 200:
                 raise RuntimeError(text)
@@ -81,7 +81,6 @@ async def gigachat_chat(
                 headers=headers,
                 json=payload,
                 timeout=90,
-                ssl=False,
             )
 
         r = await _call(token)

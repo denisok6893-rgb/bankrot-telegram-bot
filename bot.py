@@ -41,6 +41,7 @@ from bankrot_bot.keyboards.menus import (
     docs_menu_ikb,
     case_files_ikb,
     case_archive_ikb,
+    cases_menu_ikb,
 )
 
 class CaseCreate(StatesGroup):
@@ -72,63 +73,6 @@ class CreditorsFill(StatesGroup):
 # =========================
 # env
 # =========================
-
-
-def _old_build_docx_from_template(template_path: str, owner_user_id: int, case_row: tuple) -> Path:
-    """
-    Подготовка DOCX через шаблон:
-    - если в шаблоне есть {{placeholders}} → подставляем данные
-    - если нет → аккуратно дописываем базовую информацию
-    """
-    (
-        cid,
-        row_owner_id,
-        code_name,
-        case_number,
-        court,
-        judge,
-        fin_manager,
-        stage,
-        notes,
-        created_at,
-        updated_at,
-    ) = case_row
-
-    template_file = Path(template_path)
-    doc = Document(template_file)
-
-    mapping = {
-        "case_id": cid,
-        "code_name": code_name,
-        "case_number": case_number or "-",
-        "court": court or "-",
-        "judge": judge or "-",
-        "fin_manager": fin_manager or "-",
-        "stage": stage or "-",
-        "notes": notes or "-",
-        "created_at": created_at,
-        "updated_at": updated_at,
-        "debtor_phone": debtor_phone,
-    }
-
-    if _doc_has_placeholders(doc):
-        _replace_placeholders(doc, mapping)
-    else:
-        doc.add_paragraph("")
-        p = doc.add_paragraph("Данные дела")
-        try:
-            p.style = "Heading 2"
-        except KeyError:
-            try:
-                p.style = "Заголовок 2"
-            except KeyError:
-                pass
-
-        doc.add_paragraph(f"Дело: {case_number or '-'}")
-        doc.add_paragraph(f"Кодовое имя: {code_name}")
-        doc.add_paragraph(f"Суд: {court or '-'}")
-        doc.add_paragraph(f"Судья: {judge or '-'}")
-
 
 
 def _doc_has_placeholders(doc: Document) -> bool:
@@ -167,41 +111,6 @@ def _replace_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
     for table in doc.tables:
         replace_in_table(table)
 
-def validate_case_card(card: dict) -> list[str]:
-    """
-    Проверяет обязательные поля карточки дела
-    Возвращает список отсутствующих полей
-    """
-    required_fields = [
-        "court_name",
-        "court_address",
-        "debtor_full_name",
-        "debtor_last_name",
-        "debtor_first_name",
-        "debtor_gender",
-        "debtor_birth_date",
-        "debtor_address",
-        "passport_series",
-        "passport_number",
-        "passport_issued_by",
-        "passport_date",
-        "passport_code",
-        "total_debt_rubles",
-        "total_debt_kopeks",
-    ]
-
-    missing = []
-
-    for field in required_fields:
-        value = card.get(field)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            missing.append(field)
-
-    if card.get("debtor_gender") not in ("male", "female"):
-        if "debtor_gender" not in missing:
-            missing.append("debtor_gender")
-
-    return missing
 def build_gender_forms(gender: str | None) -> dict:
     """
     Возвращает слова в нужном роде для плейсхолдеров шаблона:
@@ -283,24 +192,6 @@ def build_family_status_block(card: dict) -> str:
         lines.append("Несовершеннолетних детей нет.")
 
     return "\n".join(lines)
-
-
-def _old_build_creditors_header_block(creditors: list[dict] | None) -> str:
-    if not isinstance(creditors, list) or not creditors:
-        return ""
-
-    names: list[str] = []
-    for c in creditors:
-        if not isinstance(c, dict):
-            continue
-        name = str(c.get("name") or "").strip()
-        if name:
-            names.append(name)
-
-    if not names:
-        return ""
-
-    return "Сведения о кредиторах:\n" + ";\n".join(names) + "."
 
 
 def _old_build_creditors_block(creditors: list[dict] | None) -> str:
@@ -636,7 +527,7 @@ def _old_build_online_hearing_docx(case_row: Tuple) -> Path:
     return out_path
 
 
-def _old_build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
+def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
     Генерация заявления о банкротстве по шаблону.
     Подстановка строго по 23 плейсхолдерам шаблона + дефолты для пустых данных.
@@ -1093,23 +984,6 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
              (owner_user_id, cid),
         )
         return cur.fetchone()
-
-def upsert_case_card(owner_user_id: int, cid: int, data: dict) -> None:
-    now = _now()
-    payload = json.dumps(data, ensure_ascii=False)
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            INSERT INTO case_cards (case_id, owner_user_id, data, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(case_id, owner_user_id) DO UPDATE SET
-                data = excluded.data,
-                updated_at = excluded.updated_at
-            """,
-            (cid, owner_user_id, payload, now, now),
-        )
-        con.commit()
 
 def get_profile(owner_user_id: int) -> tuple | None:
     with sqlite3.connect(DB_PATH) as con:
@@ -1809,7 +1683,7 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
             await call.answer()
             return
 
-        path = _old_build_bankruptcy_petition_doc(case_row, card)
+        path = build_bankruptcy_petition_doc(case_row, card)
         await call.message.answer_document(
             FSInputFile(path),
             caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
@@ -1998,6 +1872,34 @@ async def profile_edit_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
+@dp.callback_query(lambda c: c.data == "docs:choose_case")
+async def docs_choose_case(call: CallbackQuery):
+    """Показывает список дел для выбора дела для документов."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+    if not rows:
+        await call.message.answer("Пока нет дел. Создай дело через «📂 Дела».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = ["📄 Выбери дело для генерации документов:"]
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        lines.append(f"#{cid} | {code_name} | № {num}")
+        kb.button(text=f"Дело #{cid}: {code_name}", callback_data=f"docs:case:{cid}")
+
+    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
 @dp.callback_query(lambda c: c.data.startswith("docs:case:"))
 async def docs_case_selected(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
@@ -2054,7 +1956,8 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    missing = validate_case_card(card)
+    validation = validate_case_card(card)
+    missing = validation.get("missing", [])
     if missing:
         await call.message.answer(
             "Не хватает обязательных данных в карточке дела:\n"
@@ -2068,7 +1971,7 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    path = _old_build_bankruptcy_petition_doc(case_row, card)
+    path = build_bankruptcy_petition_doc(case_row, card)
     await call.message.answer_document(
         FSInputFile(path),
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
@@ -2152,7 +2055,8 @@ async def card_set(message: Message, state: FSMContext):
     # Сохраняем карточку
     upsert_case_card(uid, cid, data)
 
-    missing = validate_case_card(data)
+    validation = validate_case_card(data)
+    missing = validation.get("missing", [])
     if missing:
         await message.answer(
             "Карточка сохранена ✅\n"
@@ -2383,8 +2287,6 @@ async def case_step_fin_manager(message: Message, state: FSMContext):
         f"Судья: {judge or '-'}\n"
         f"ФУ: {fin_manager or '-'}"
     )
-
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 @dp.callback_query(lambda c: c.data == "case:list")
 async def case_list(call: CallbackQuery):
@@ -3008,17 +2910,8 @@ def _safe_digits(s: str) -> str:
     return "".join(ch for ch in s if ch.isdigit())
 
 
-@dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
-async def creditors_menu(call: CallbackQuery, state: FSMContext):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    cid = int(call.data.split(":")[2])
-    await state.clear()
-    await state.update_data(card_case_id=cid)
-
+async def send_creditors_menu(message_target, uid: int, cid: int) -> None:
+    """Helper функция для отправки меню кредиторов."""
     card = get_case_card(uid, cid) or {}
     creditors = card.get("creditors")
     if not isinstance(creditors, list):
@@ -3047,7 +2940,21 @@ async def creditors_menu(call: CallbackQuery, state: FSMContext):
     kb.button(text="🔙 Назад в карточку", callback_data=f"case:card:{cid}")
     kb.adjust(1)
 
-    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await message_target.answer("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
+async def creditors_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+
+    await send_creditors_menu(call.message, uid, cid)
     await call.answer()
 
 
@@ -3177,8 +3084,7 @@ async def creditors_text_set(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("✅ creditors_text очищен.")
         # показать меню кредиторов
-        fake_call = type("obj", (), {"from_user": message.from_user, "data": f"case:creditors:{cid}", "message": message, "answer": (lambda *a, **k: None)})
-        await creditors_menu(fake_call, state)
+        await send_creditors_menu(message, uid, cid)
         return
 
     card["creditors_text"] = text
@@ -3186,8 +3092,7 @@ async def creditors_text_set(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("✅ Сохранено creditors_text.")
-    fake_call = type("obj", (), {"from_user": message.from_user, "data": f"case:creditors:{cid}", "message": message, "answer": (lambda *a, **k: None)})
-    await creditors_menu(fake_call, state)
+    await send_creditors_menu(message, uid, cid)
 
 
 @dp.message(CreditorsFill.name)
