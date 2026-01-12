@@ -15,6 +15,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+  redis:
+    image: redis:7-alpine
+    container_name: bankrot_redis
+    command: redis-server --appendonly yes
+    volumes:
+    - bankrot_redis_data:/data
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
   bankrot_bot:
     build: .
     container_name: bankrot_bot
@@ -25,8 +39,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-bankrot}:${POSTGRES_PASSWORD:-bankrot_password}@postgres:5432/${POSTGRES_DB:-bankrot}
+      REDIS_URL: redis://redis:6379/0
       DB_PATH: /app/bankrot.db
     volumes:
     - ./generated:/app/generated
@@ -49,3 +66,4 @@ services:
     restart: unless-stopped
 volumes:
   bankrot_pg_data: null
+  bankrot_redis_data: null
