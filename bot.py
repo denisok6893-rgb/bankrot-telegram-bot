@@ -3597,19 +3597,55 @@ async def main_text_router(message: Message, state: FSMContext):
 
 
 async def main():
+    import logging
+    logger = logging.getLogger(__name__)
+
     init_db()
     bot = Bot(token=BOT_TOKEN)
+
+    # Execution mode: polling (default) or webhook
     mode = os.getenv('TELEGRAM_MODE', 'polling').strip().lower()
+
     if mode == 'polling':
-        # polling-mode: ensure webhook is disabled
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        # POLLING MODE: Clear any existing webhook and start polling
+        logger.info("=" * 60)
+        logger.info("Bot starting in POLLING mode")
+        logger.info("=" * 60)
+
+        try:
+            # Robustly delete any existing webhook
+            logger.info("Deleting any existing webhook...")
+            webhook_info = await bot.get_webhook_info()
+            if webhook_info.url:
+                logger.warning(f"Found active webhook: {webhook_info.url}")
+                logger.info("Removing webhook to enable polling...")
+
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted successfully. Starting polling...")
+
+            await dp.start_polling(bot)
+        except Exception as e:
+            logger.error(f"Failed to start bot: {e}")
+            if "conflict" in str(e).lower():
+                logger.error("TelegramConflictError detected!")
+                logger.error("This usually means another bot instance is running or webhook is still active.")
+                logger.error("Solutions:")
+                logger.error("  1. Stop any other running bot instances")
+                logger.error("  2. Manually delete webhook via: curl https://api.telegram.org/bot<TOKEN>/deleteWebhook")
+                logger.error("  3. Wait a few minutes and try again")
+            raise
         return
+
     if mode == 'webhook':
-        # webhook-mode: FastAPI (web.py) receives updates and calls dp.feed_update(...)
-        # keep process alive if someone runs bot.py directly by mistake
+        # WEBHOOK MODE: FastAPI (web.py) receives updates and calls dp.feed_update(...)
+        logger.info("=" * 60)
+        logger.info("Bot starting in WEBHOOK mode")
+        logger.info("=" * 60)
+        logger.info("Webhook updates handled by web.py (FastAPI)")
+        # Keep process alive if someone runs bot.py directly by mistake
         while True:
             await asyncio.sleep(3600)
+
     raise RuntimeError(f'Unknown TELEGRAM_MODE={mode!r}. Use polling|webhook')
 
 if __name__ == "__main__":
