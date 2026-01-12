@@ -933,8 +933,6 @@ async def _selected_case_id(state: FSMContext) -> int | None:
     except (TypeError, ValueError):
         return None
 
-DB_PATH = os.getenv("DB_PATH", "/root/bankrot_bot/bankrot.db")
-
 settings = load_settings()
 
 BOT_TOKEN = settings["BOT_TOKEN"]
@@ -1018,20 +1016,6 @@ def init_db() -> None:
         );
         """)
 
-        # ===== case_cards (карточка дела, JSON) =====
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS case_cards (
-            case_id INTEGER NOT NULL,
-            owner_user_id INTEGER NOT NULL,
-            data TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (case_id, owner_user_id)
-        );
-        """)
-
-        con.commit()
-
         # ===== profiles (для документов) =====
         con.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
@@ -1109,27 +1093,6 @@ def get_case(owner_user_id: int, cid: int) -> Tuple | None:
              (owner_user_id, cid),
         )
         return cur.fetchone()
-
-def get_case_card(owner_user_id: int, cid: int) -> dict | None:
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            SELECT data
-              FROM case_cards
-             WHERE owner_user_id = ?
-               AND case_id = ?
-            """,
-            (owner_user_id, cid),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        try:
-            return json.loads(row[0])
-        except json.JSONDecodeError:
-            return None
-
 
 def upsert_case_card(owner_user_id: int, cid: int, data: dict) -> None:
     now = _now()
@@ -1782,7 +1745,6 @@ async def case_file_send(call: CallbackQuery):
     case_dir = GENERATED_DIR / "cases" / str(case_id)
     path = case_dir / filename
 
-    path = GENERATED_DIR / filename
     if not path.exists():
         await call.message.answer("Файл не найден (возможно, удалён).")
         await call.answer()
@@ -2050,10 +2012,10 @@ async def docs_case_selected(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-        await state.update_data(docs_case_id=cid)
-        await call.message.answer(
-            f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇",
-            reply_markup=docs_menu_ikb(cid),
+    await state.update_data(docs_case_id=cid)
+    await call.message.answer(
+        f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇",
+        reply_markup=docs_menu_ikb(cid),
     )
     await call.answer()
 
