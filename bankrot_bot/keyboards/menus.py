@@ -25,8 +25,9 @@ def start_ikb() -> InlineKeyboardMarkup:
 
 
 def home_ikb() -> InlineKeyboardMarkup:
+    """Новое главное меню (MVP): Мои дела, Документы, Помощь."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="👤 Мой профиль", callback_data="menu:profile")
+    kb.button(text="📂 Мои дела", callback_data="menu:my_cases")
     kb.button(text="📄 Документы", callback_data="menu:docs")
     kb.button(text="❓ Помощь", callback_data="menu:help")
     kb.adjust(2, 1)
@@ -73,8 +74,93 @@ def docs_home_ikb() -> InlineKeyboardMarkup:
 
 
 def help_ikb() -> InlineKeyboardMarkup:
+    """Подменю раздела Помощь с несколькими пунктами."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="menu:home")
+    kb.button(text="📖 Как пользоваться ботом", callback_data="help:howto")
+    kb.button(text="📋 Что такое карточки дел", callback_data="help:cases")
+    kb.button(text="📄 О документах", callback_data="help:docs")
+    kb.button(text="✉️ Контакты / Обратная связь", callback_data="help:contacts")
+    kb.button(text="ℹ️ О боте", callback_data="help:about")
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def help_item_ikb() -> InlineKeyboardMarkup:
+    """Навигация для отдельных пунктов помощи."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад в помощь", callback_data="menu:help")
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ---------- Раздел «Мои дела» ----------
+
+def my_cases_ikb(cases: list[tuple], active_case_id: int = None) -> InlineKeyboardMarkup:
+    """
+    Раздел «Мои дела».
+    Показывает список дел + кнопку создания дела + заглушку ИИ.
+
+    cases: список кортежей (id, title/code_name, ...)
+    active_case_id: ID активного дела (если установлено)
+    """
+    kb = InlineKeyboardBuilder()
+
+    # Кнопка создания нового дела всегда сверху
+    kb.button(text="➕ Создать дело", callback_data="case:new")
+
+    # Список дел пользователя
+    if cases:
+        for row in cases:
+            cid = row[0]
+            title = row[1] or f"Дело #{cid}"
+            # Отметим активное дело
+            if active_case_id and cid == active_case_id:
+                title = f"✓ {title}"
+            kb.button(text=title, callback_data=f"case:open:{cid}")
+
+    # ИИ-помощник (заглушка)
+    kb.button(text="🤖 ИИ-помощник (скоро)", callback_data="ai:placeholder")
+
+    # Кнопка возврата
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ---------- Публичный каталог документов ----------
+
+def docs_catalog_ikb() -> InlineKeyboardMarkup:
+    """Главное меню публичного каталога документов."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📋 Заявления", callback_data="docs_cat:zayavleniya")
+    kb.button(text="📝 Ходатайства", callback_data="docs_cat:khodataystva")
+    kb.button(text="📄 Прочие документы", callback_data="docs_cat:prochie")
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def docs_category_ikb(category: str, docs: list[tuple]) -> InlineKeyboardMarkup:
+    """
+    Список документов в категории.
+    docs: список (doc_id, title)
+    """
+    kb = InlineKeyboardBuilder()
+    for doc_id, title in docs:
+        kb.button(text=title, callback_data=f"docs_item:{category}:{doc_id}")
+    kb.button(text="🔙 Назад к категориям", callback_data="menu:docs")
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def docs_item_ikb(category: str) -> InlineKeyboardMarkup:
+    """Навигация для карточки документа."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад к списку", callback_data=f"docs_cat:{category}")
+    kb.button(text="🏠 Главное меню", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()
 
