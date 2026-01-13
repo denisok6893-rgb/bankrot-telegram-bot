@@ -38,6 +38,8 @@ from bankrot_bot.services.case_financials import (
     delete_case_asset,
     calculate_assets_total,
     parse_amount_input,
+    normalize_amount_to_string,
+    string_to_decimal,
 )
 from bankrot_bot.services.docx_forms import (
     render_creditors_list,
@@ -3752,8 +3754,14 @@ async def process_party_name(message: Message, state: FSMContext):
 async def process_party_amount(message: Message, state: FSMContext):
     """Обработать ввод суммы."""
     logger.info(f"User {message.from_user.id} entered party amount in AddParty FSM")
-    amount = parse_amount_input(message.text)
-    await state.update_data(amount=amount)
+    # Normalize to JSON-safe string for Redis FSM storage
+    amount_str = normalize_amount_to_string(message.text)
+    if amount_str is None:
+        await message.answer(
+            "❌ Неверный формат суммы. Введите число (например: 100000 или 100 000.50):"
+        )
+        return
+    await state.update_data(amount=amount_str)
     await message.answer("Введите основание требования/долга (или '-' для пропуска):")
     await state.set_state(AddParty.basis)
 
@@ -3768,7 +3776,10 @@ async def process_party_basis(message: Message, state: FSMContext):
     case_id = data["case_id"]
     role = data["role"]
     name = data["name"]
-    amount = data["amount"]
+    amount_str = data["amount"]
+
+    # Convert JSON-safe string back to Decimal for DB insertion
+    amount = string_to_decimal(amount_str)
 
     from bankrot_bot.database import get_session
     async with get_session() as session:
@@ -3804,7 +3815,18 @@ async def process_asset_value(message: Message, state: FSMContext):
     """Завершить добавление имущества."""
     logger.info(f"User {message.from_user.id} completing AddAsset FSM")
     value_text = message.text.strip()
-    value = parse_amount_input(value_text) if value_text != "-" else None
+
+    # Parse value with validation
+    value = None
+    if value_text != "-":
+        # Use normalize_amount_to_string for consistent validation
+        normalized = normalize_amount_to_string(value_text)
+        if normalized is None:
+            await message.answer(
+                "❌ Неверный формат стоимости. Введите число (например: 100000 или 100 000.50) или '-' для пропуска:"
+            )
+            return
+        value = string_to_decimal(normalized)
 
     data = await state.get_data()
     case_id = data["case_id"]
