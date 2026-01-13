@@ -107,6 +107,7 @@ class CreditorsFill(StatesGroup):
     debt_rubles = State()
     debt_kopeks = State()
     note = State()
+    creditors_text = State()  # For bulk creditor text input
 
 class AddParty(StatesGroup):
     """FSM для добавления кредитора/должника."""
@@ -119,7 +120,6 @@ class AddAsset(StatesGroup):
     kind = State()
     description = State()
     value = State()
-    creditors_text = State()
 
 # =========================
 # env
@@ -3737,77 +3737,6 @@ async def case_cmd(message: Message):
 
 # =========================
 # callbacks
-# =========================
-@dp.callback_query()
-async def on_callback(call: CallbackQuery):
-    uid = call.from_user.id
-    data = call.data or ""
-    flow = USER_FLOW.get(uid) or {}
-
-    if data.startswith(("docs:", "case:", "profile:", "back:")):
-        await call.answer()
-        return
-
-    if not is_allowed(uid):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    is_flow_callback = (
-        data == "export:word"
-        or data == "flow:cancel"
-        or data == "flow:motion"
-        or data == "flow:settlement"
-        or data.startswith("motion:court:")
-    )
-
-    if not is_flow_callback:
-        await call.answer()
-        return
-
-    if data == "export:word":
-        await call.answer()
-        text = LAST_RESULT.get(uid)
-        if text:
-            await call.message.answer(text)
-        else:
-            await call.message.answer("Пока нечего экспортировать.")
-        return
-
-    if data == "flow:cancel":
-        await call.answer()
-        cancel_flow(uid)
-        await call.message.answer("Ок, отменил. Меню 👇", reply_markup=main_keyboard())
-        return
-
-    if data == "flow:motion":
-        await call.answer()
-        USER_FLOW[uid] = {"flow": "motion", "stage": "choose_court", "court_type": None, "step": 0, "answers": {}}
-        await call.message.answer("Выбери тип суда:", reply_markup=court_type_keyboard())
-        return
-
-    if data.startswith("motion:court:"):
-        await call.answer()
-        ct = data.split(":")[-1]
-        if uid not in USER_FLOW or USER_FLOW[uid].get("flow") != "motion":
-            USER_FLOW[uid] = {"flow": "motion", "stage": "fill", "court_type": ct, "step": 0, "answers": {}}
-        else:
-            USER_FLOW[uid]["stage"] = "fill"
-            USER_FLOW[uid]["court_type"] = ct
-            USER_FLOW[uid]["step"] = 0
-            USER_FLOW[uid]["answers"] = {}
-        await call.message.answer(MOTION_STEPS[0][1], reply_markup=motion_actions_keyboard())
-        return
-
-    if data == "flow:settlement":
-        await call.answer()
-        USER_FLOW[uid] = {"flow": "settlement", "step": 0, "answers": {}}
-        await call.message.answer(SETTLEMENT_STEPS[0][1], reply_markup=settlement_actions_keyboard())
-        return
-
-    await call.answer()
-    return
-
-
 @dp.message()
 async def main_text_router(message: Message, state: FSMContext):
     # Если идёт FSM (создание дела и т.п.) — не мешаем
@@ -4214,6 +4143,79 @@ async def generate_inventory_doc(call: CallbackQuery):
     except Exception as e:
         logger.error(f"Error generating inventory: {e}", exc_info=True)
         await call.message.answer("❌ Ошибка при генерации документа. Проверьте, что вы заполнили профиль должника.")
+
+
+# =========================
+# Catch-all callback handler (must be AFTER all specific handlers)
+# =========================
+@dp.callback_query()
+async def on_callback(call: CallbackQuery):
+    uid = call.from_user.id
+    data = call.data or ""
+    flow = USER_FLOW.get(uid) or {}
+
+    if data.startswith(("docs:", "case:", "profile:", "back:")):
+        await call.answer()
+        return
+
+    if not is_allowed(uid):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    is_flow_callback = (
+        data == "export:word"
+        or data == "flow:cancel"
+        or data == "flow:motion"
+        or data == "flow:settlement"
+        or data.startswith("motion:court:")
+    )
+
+    if not is_flow_callback:
+        await call.answer()
+        return
+
+    if data == "export:word":
+        await call.answer()
+        text = LAST_RESULT.get(uid)
+        if text:
+            await call.message.answer(text)
+        else:
+            await call.message.answer("Пока нечего экспортировать.")
+        return
+
+    if data == "flow:cancel":
+        await call.answer()
+        cancel_flow(uid)
+        await call.message.answer("Ок, отменил. Меню 👇", reply_markup=main_keyboard())
+        return
+
+    if data == "flow:motion":
+        await call.answer()
+        USER_FLOW[uid] = {"flow": "motion", "stage": "choose_court", "court_type": None, "step": 0, "answers": {}}
+        await call.message.answer("Выбери тип суда:", reply_markup=court_type_keyboard())
+        return
+
+    if data.startswith("motion:court:"):
+        await call.answer()
+        ct = data.split(":")[-1]
+        if uid not in USER_FLOW or USER_FLOW[uid].get("flow") != "motion":
+            USER_FLOW[uid] = {"flow": "motion", "stage": "fill", "court_type": ct, "step": 0, "answers": {}}
+        else:
+            USER_FLOW[uid]["stage"] = "fill"
+            USER_FLOW[uid]["court_type"] = ct
+            USER_FLOW[uid]["step"] = 0
+            USER_FLOW[uid]["answers"] = {}
+        await call.message.answer(MOTION_STEPS[0][1], reply_markup=motion_actions_keyboard())
+        return
+
+    if data == "flow:settlement":
+        await call.answer()
+        USER_FLOW[uid] = {"flow": "settlement", "step": 0, "answers": {}}
+        await call.message.answer(SETTLEMENT_STEPS[0][1], reply_markup=settlement_actions_keyboard())
+        return
+
+    await call.answer()
+    return
 
 
 async def main():
