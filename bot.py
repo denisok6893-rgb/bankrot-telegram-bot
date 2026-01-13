@@ -27,6 +27,18 @@ from bankrot_bot.services.public_docs import (
     get_document,
     CATEGORY_TITLES,
 )
+from bankrot_bot.services.case_financials import (
+    get_case_parties,
+    add_case_party,
+    delete_case_party,
+    calculate_parties_totals,
+    format_parties_for_doc,
+    get_case_assets,
+    add_case_asset,
+    delete_case_asset,
+    calculate_assets_total,
+    parse_amount_input,
+)
 
 import aiohttp
 setup_logging()
@@ -61,6 +73,10 @@ from bankrot_bot.keyboards.menus import (
     docs_catalog_ikb,
     docs_category_ikb,
     docs_item_ikb,
+    case_parties_ikb,
+    party_view_ikb,
+    case_assets_ikb,
+    asset_view_ikb,
 )
 
 class CaseCreate(StatesGroup):
@@ -87,6 +103,18 @@ class CreditorsFill(StatesGroup):
     debt_rubles = State()
     debt_kopeks = State()
     note = State()
+
+class AddParty(StatesGroup):
+    """FSM для добавления кредитора/должника."""
+    name = State()
+    amount = State()
+    basis = State()
+
+class AddAsset(StatesGroup):
+    """FSM для добавления имущества."""
+    kind = State()
+    description = State()
+    value = State()
     creditors_text = State()
 
 # =========================
@@ -546,15 +574,29 @@ def _old_build_online_hearing_docx(case_row: Tuple) -> Path:
     return out_path
 
 
-def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
+async def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
     Генерация заявления о банкротстве по шаблону.
     Подстановка строго по 23 плейсхолдерам шаблона + дефолты для пустых данных.
+
+    НОВОЕ: приоритетно используем данные из case_parties (если есть).
     """
     cid = case_row[0]
 
     template_path = Path("templates/petitions/bankruptcy_petition.docx")
     doc = Document(template_path)
+
+    # Попытка загрузить кредиторов из новых таблиц
+    creditors_from_db = []
+    try:
+        from bankrot_bot.database import get_session
+
+        async with get_session() as session:
+            parties = await get_case_parties(session, cid, role="creditor")
+            if parties:
+                creditors_from_db = format_parties_for_doc(parties, role="creditor")
+    except Exception as e:
+        logger.warning(f"Failed to load creditors from DB for case {cid}: {e}")
 
     # --- дефолты ---
     def _txt(v: Any) -> str:
@@ -631,7 +673,11 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     certificate_number = _txt(certificate_number)
     certificate_date = _txt(certificate_date)
 
-    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+    # НОВАЯ ЛОГИКА: приоритет - creditors_from_db, потом card creditors
+    if creditors_from_db:
+        creditors = creditors_from_db
+    else:
+        creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
 
     auto_r, auto_k = sum_creditors_total(creditors)
     if auto_r or auto_k:
@@ -1997,7 +2043,7 @@ async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
             await call.answer()
             return
 
-        path = build_bankruptcy_petition_doc(case_row, card)
+        path = await build_bankruptcy_petition_doc(case_row, card)
         await call.message.answer_document(
             FSInputFile(path),
             caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
@@ -2285,7 +2331,7 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    path = build_bankruptcy_petition_doc(case_row, card)
+    path = await build_bankruptcy_petition_doc(case_row, card)
     await call.message.answer_document(
         FSInputFile(path),
         caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
@@ -3813,6 +3859,293 @@ async def main_text_router(message: Message, state: FSMContext):
 
         cancel_flow(uid)
         return
+
+
+# ========== Хэндлеры для Кредиторов/Должников ==========
+
+@dp.callback_query(F.data.startswith("case:parties:"))
+async def show_case_parties(call: CallbackQuery):
+    """Показать список кредиторов/должников по делу."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        parties = await get_case_parties(session, case_id)
+        totals = calculate_parties_totals(parties)
+
+        text = f"💰 Кредиторы и должники по делу #{case_id}\n\n"
+        text += f"Кредиторов: {totals['creditors_count']}, сумма: {totals['total_creditors']:.2f} ₽\n"
+        text += f"Должников: {totals['debtors_count']}, сумма: {totals['total_debtors']:.2f} ₽"
+
+        await call.message.answer(
+            text,
+            reply_markup=case_parties_ikb(case_id, parties, totals['creditors_count'], totals['debtors_count'])
+        )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("party:add_creditor:") | F.data.startswith("party:add_debtor:"))
+async def start_add_party(call: CallbackQuery, state: FSMContext):
+    """Начать добавление кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    role = "creditor" if "creditor" in call.data else "debtor"
+    case_id = int(parts[-1])
+
+    await state.update_data(case_id=case_id, role=role)
+    await state.set_state(AddParty.name)
+
+    role_text = "кредитора" if role == "creditor" else "должника"
+    await call.message.answer(f"Добавление {role_text}\n\nВведите наименование/ФИО:")
+    await call.answer()
+
+
+@dp.message(AddParty.name)
+async def process_party_name(message: Message, state: FSMContext):
+    """Обработать ввод имени кредитора/должника."""
+    await state.update_data(name=message.text.strip())
+    await message.answer("Введите сумму (например: 100000 или 100 000.50):")
+    await state.set_state(AddParty.amount)
+
+
+@dp.message(AddParty.amount)
+async def process_party_amount(message: Message, state: FSMContext):
+    """Обработать ввод суммы."""
+    amount = parse_amount_input(message.text)
+    await state.update_data(amount=amount)
+    await message.answer("Введите основание требования/долга (или '-' для пропуска):")
+    await state.set_state(AddParty.basis)
+
+
+@dp.message(AddParty.basis)
+async def process_party_basis(message: Message, state: FSMContext):
+    """Завершить добавление кредитора/должника."""
+    basis = message.text.strip() if message.text.strip() != "-" else None
+
+    data = await state.get_data()
+    case_id = data["case_id"]
+    role = data["role"]
+    name = data["name"]
+    amount = data["amount"]
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        await add_case_party(session, case_id, role, name, amount, basis=basis)
+        await session.commit()
+
+    role_text = "Кредитор" if role == "creditor" else "Должник"
+    await message.answer(f"✅ {role_text} добавлен: {name}, сумма: {amount:.2f} ₽")
+    await state.clear()
+
+
+@dp.callback_query(F.data.startswith("party:view:"))
+async def view_party(call: CallbackQuery):
+    """Просмотр кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    party_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    from bankrot_bot.models.case_party import CaseParty
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(CaseParty).where(CaseParty.id == party_id)
+        result = await session.execute(stmt)
+        party = result.scalar_one_or_none()
+
+        if not party:
+            await call.answer("Запись не найдена", show_alert=True)
+            return
+
+        role_text = "Кредитор" if party.role == "creditor" else "Должник"
+        text = f"{role_text}\n\n"
+        text += f"Наименование: {party.name}\n"
+        text += f"Сумма: {float(party.amount):.2f} {party.currency}\n"
+        if party.basis:
+            text += f"Основание: {party.basis}\n"
+        if party.notes:
+            text += f"Примечания: {party.notes}\n"
+
+        await call.message.answer(text, reply_markup=party_view_ikb(party_id, party.case_id))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("party:delete:"))
+async def delete_party(call: CallbackQuery):
+    """Удалить кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    party_id = int(parts[2])
+    case_id = int(parts[3])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        success = await delete_case_party(session, party_id, case_id)
+        await session.commit()
+
+        if success:
+            await call.message.answer("✅ Запись удалена")
+        else:
+            await call.answer("Ошибка удаления", show_alert=True)
+    await call.answer()
+
+
+# ========== Хэндлеры для Описи имущества ==========
+
+@dp.callback_query(F.data.startswith("case:assets:"))
+async def show_case_assets(call: CallbackQuery):
+    """Показать опись имущества по делу."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        assets = await get_case_assets(session, case_id)
+        total = calculate_assets_total(assets)
+
+        text = f"🏠 Опись имущества по делу #{case_id}\n\n"
+        text += f"Записей: {len(assets)}\n"
+        text += f"Общая стоимость: {float(total):.2f} ₽"
+
+        await call.message.answer(
+            text,
+            reply_markup=case_assets_ikb(case_id, assets, float(total))
+        )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("asset:add:"))
+async def start_add_asset(call: CallbackQuery, state: FSMContext):
+    """Начать добавление имущества."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+    await state.update_data(case_id=case_id)
+    await state.set_state(AddAsset.kind)
+
+    await call.message.answer("Добавление имущества\n\nВведите вид имущества (например: квартира, автомобиль, акции):")
+    await call.answer()
+
+
+@dp.message(AddAsset.kind)
+async def process_asset_kind(message: Message, state: FSMContext):
+    """Обработать ввод вида имущества."""
+    await state.update_data(kind=message.text.strip())
+    await message.answer("Введите описание (адрес, марка, реквизиты и т.п.):")
+    await state.set_state(AddAsset.description)
+
+
+@dp.message(AddAsset.description)
+async def process_asset_description(message: Message, state: FSMContext):
+    """Обработать ввод описания."""
+    await state.update_data(description=message.text.strip())
+    await message.answer("Введите стоимость (или '-' для пропуска):")
+    await state.set_state(AddAsset.value)
+
+
+@dp.message(AddAsset.value)
+async def process_asset_value(message: Message, state: FSMContext):
+    """Завершить добавление имущества."""
+    value_text = message.text.strip()
+    value = parse_amount_input(value_text) if value_text != "-" else None
+
+    data = await state.get_data()
+    case_id = data["case_id"]
+    kind = data["kind"]
+    description = data["description"]
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        await add_case_asset(session, case_id, kind, description, value=value)
+        await session.commit()
+
+    value_str = f"{float(value):.2f} ₽" if value else "не указана"
+    await message.answer(f"✅ Имущество добавлено:\n{kind}\nСтоимость: {value_str}")
+    await state.clear()
+
+
+@dp.callback_query(F.data.startswith("asset:view:"))
+async def view_asset(call: CallbackQuery):
+    """Просмотр имущества."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    asset_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    from bankrot_bot.models.case_asset import CaseAsset
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(CaseAsset).where(CaseAsset.id == asset_id)
+        result = await session.execute(stmt)
+        asset = result.scalar_one_or_none()
+
+        if not asset:
+            await call.answer("Запись не найдена", show_alert=True)
+            return
+
+        text = f"🏠 {asset.kind}\n\n"
+        text += f"Описание: {asset.description}\n"
+        if asset.qty_or_area:
+            text += f"Количество/площадь: {asset.qty_or_area}\n"
+        if asset.value:
+            text += f"Стоимость: {float(asset.value):.2f} ₽\n"
+        if asset.notes:
+            text += f"Примечания: {asset.notes}\n"
+
+        await call.message.answer(text, reply_markup=asset_view_ikb(asset_id, asset.case_id))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("asset:delete:"))
+async def delete_asset(call: CallbackQuery):
+    """Удалить имущество."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    asset_id = int(parts[2])
+    case_id = int(parts[3])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        success = await delete_case_asset(session, asset_id, case_id)
+        await session.commit()
+
+        if success:
+            await call.message.answer("✅ Запись удалена")
+        else:
+            await call.answer("Ошибка удаления", show_alert=True)
+    await call.answer()
 
 
 async def main():

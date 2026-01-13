@@ -143,15 +143,30 @@ def build_family_status_block(card: dict) -> str:
 
 
 
-def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
+async def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     """
     Генерация заявления о банкротстве по шаблону.
     Подстановка строго по 23 плейсхолдерам шаблона + дефолты для пустых данных.
+
+    НОВОЕ: приоритетно используем данные из case_parties/case_assets (если есть).
     """
     cid = case_row[0]
 
     template_path = Path("templates/petitions/bankruptcy_petition.docx")
     doc = Document(template_path)
+
+    # Попытка загрузить кредиторов из новых таблиц
+    creditors_from_db = []
+    try:
+        from bankrot_bot.database import get_session
+        from bankrot_bot.services.case_financials import get_case_parties, format_parties_for_doc
+
+        async with get_session() as session:
+            parties = await get_case_parties(session, cid, role="creditor")
+            if parties:
+                creditors_from_db = format_parties_for_doc(parties, role="creditor")
+    except Exception as e:
+        logger.warning(f"Failed to load creditors from DB for case {cid}: {e}")
 
     # --- дефолты ---
     def _txt(v: Any) -> str:
@@ -228,7 +243,11 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
     certificate_number = _txt(certificate_number)
     certificate_date = _txt(certificate_date)
 
-    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
+    # НОВАЯ ЛОГИКА: приоритет - creditors_from_db, потом card creditors
+    if creditors_from_db:
+        creditors = creditors_from_db
+    else:
+        creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
 
     auto_r, auto_k = sum_creditors_total(creditors)
     if auto_r or auto_k:
@@ -249,10 +268,9 @@ def build_bankruptcy_petition_doc(case_row: Tuple, card: dict) -> Path:
         logger.warning(f"Failed to build attachments list: {e}")
         attachments_list = ""
 
-    # creditors_block: creditors_text приоритетно, иначе список, иначе нейтральный текст
+    # creditors_block: creditors_text приоритетно, иначе список из БД/card, иначе нейтральный текст
     creditors_text = card.get("creditors_text")
     creditors_text = str(creditors_text).strip() if creditors_text is not None else ""
-    creditors = card.get("creditors") if isinstance(card.get("creditors"), list) else []
 
     if creditors_text:
         creditors_block = creditors_text

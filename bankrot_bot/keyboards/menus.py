@@ -57,6 +57,8 @@ def cases_list_ikb(cases: list[tuple]) -> InlineKeyboardMarkup:
 
 def case_card_ikb(case_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Кредиторы/должники", callback_data=f"case:parties:{case_id}")
+    kb.button(text="🏠 Опись имущества", callback_data=f"case:assets:{case_id}")
     kb.button(text="📎 Документы по делу", callback_data=f"case:docs:{case_id}")
     kb.button(text="✏️ Редактирование карточки", callback_data=f"case:edit:{case_id}")
     kb.button(text="💬 Помощь по делу (ИИ)", callback_data=f"case:help:{case_id}")
@@ -244,6 +246,71 @@ def cases_menu_ikb() -> InlineKeyboardMarkup:
     kb.button(text="➕ Создать дело", callback_data="case:new")
     kb.button(text="📋 Список дел", callback_data="case:list")
     kb.button(text="🔙 Назад", callback_data="menu:profile")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ---------- Кредиторы/Должники ----------
+
+def case_parties_ikb(case_id: int, parties: list, creditors_count: int, debtors_count: int) -> InlineKeyboardMarkup:
+    """Список кредиторов и должников по делу."""
+    kb = InlineKeyboardBuilder()
+
+    # Кнопки добавления
+    kb.button(text=f"➕ Добавить кредитора (всего: {creditors_count})", callback_data=f"party:add_creditor:{case_id}")
+    kb.button(text=f"➕ Добавить должника (всего: {debtors_count})", callback_data=f"party:add_debtor:{case_id}")
+
+    # Список записей (первые 10)
+    for p in parties[:10]:
+        party_id = p.id
+        role_emoji = "💳" if p.role == "creditor" else "📤"
+        amount = f"{float(p.amount):.2f}" if p.amount else "0.00"
+        text = f"{role_emoji} {p.name}: {amount} ₽"
+        kb.button(text=text, callback_data=f"party:view:{party_id}")
+
+    # Навигация
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def party_view_ikb(party_id: int, case_id: int) -> InlineKeyboardMarkup:
+    """Просмотр отдельной записи кредитора/должника."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Удалить", callback_data=f"party:delete:{party_id}:{case_id}")
+    kb.button(text="🔙 Назад к списку", callback_data=f"case:parties:{case_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# ---------- Опись имущества ----------
+
+def case_assets_ikb(case_id: int, assets: list, total_value: float) -> InlineKeyboardMarkup:
+    """Список имущества по делу."""
+    kb = InlineKeyboardBuilder()
+
+    # Кнопка добавления
+    total_text = f"{total_value:.2f}" if total_value else "0.00"
+    kb.button(text=f"➕ Добавить имущество (всего: {total_text} ₽)", callback_data=f"asset:add:{case_id}")
+
+    # Список записей (первые 10)
+    for a in assets[:10]:
+        asset_id = a.id
+        value = f"{float(a.value):.2f}" if a.value else "—"
+        text = f"🏠 {a.kind}: {value} ₽"
+        kb.button(text=text, callback_data=f"asset:view:{asset_id}")
+
+    # Навигация
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def asset_view_ikb(asset_id: int, case_id: int) -> InlineKeyboardMarkup:
+    """Просмотр отдельной записи имущества."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Удалить", callback_data=f"asset:delete:{asset_id}:{case_id}")
+    kb.button(text="🔙 Назад к списку", callback_data=f"case:assets:{case_id}")
     kb.adjust(1)
     return kb.as_markup()
 
