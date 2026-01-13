@@ -515,3 +515,171 @@ async def back_to_cases(call: CallbackQuery):
         reply_markup=cases_menu_ikb()
     )
     await call.answer()
+
+
+@router.callback_query(lambda c: c.data == "case:new")
+async def case_new(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    from bot import CaseCreate
+    await state.clear()
+    await state.set_state(CaseCreate.code_name)
+    await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
+    await call.answer()
+
+
+@router.callback_query(lambda c: c.data == "case:list")
+async def case_list(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    from bot import list_cases
+    rows = list_cases(uid)  # берём последние 20 дел
+    if not rows:
+        await call.message.answer("Пока нет дел. Нажми «➕ Создать дело».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = ["📄 Ваши дела (последние 20):"]
+
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        st = stage or "-"
+        lines.append(f"#{cid} | {code_name} | № {num} | стадия: {st}")
+        kb.button(text=f"Открыть #{cid}", callback_data=f"case:open:{cid}")
+        kb.button(text="🗂 Заполнить карточку дела", callback_data = f"case:card:{cid}")
+
+    kb.button(text="🔙 Назад", callback_data="back:cases")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_open(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    from bot import get_case_card
+    cid = int(call.data.split(":")[2])
+    await state.update_data(card_case_id=cid)
+    card = get_case_card(uid, cid) or {}
+
+    lines = [f"📁 Карточка дела #{cid}"]
+    for key, title in [
+        ("court_name", "Суд"),
+        ("court_address", "Адрес суда"),
+        ("debtor_full_name", "Должник"),
+        ("debtor_gender", "Пол"),
+        ("debtor_birth_date", "Дата рождения"),
+        ("debtor_address", "Адрес должника"),
+        ("passport_series", "Паспорт серия"),
+        ("passport_number", "Паспорт номер"),
+        ("passport_issued_by", "Кем выдан паспорт"),
+        ("passport_date", "Дата выдачи паспорта"),
+        ("passport_code", "Код подразделения"),
+        ("total_debt_rubles", "Сумма долга (рубли)"),
+        ("total_debt_kopeks", "Сумма долга (копейки)"),
+    ]:
+        lines.append(f"{title}: {card.get(key) or '—'}")
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Заполнить", callback_data=f"card:fill:{cid}")
+    kb.button(text="🔙 Назад", callback_data=f"case:open:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("case:card_edit:"))
+async def case_card_edit(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    from bot import get_case, CASE_CARD_FIELD_META, CaseCardFill, send_creditors_menu
+
+    _, _, cid_str, field = call.data.split(":", maxsplit=3)
+    cid = int(cid_str)
+
+    if field not in CASE_CARD_FIELD_META:
+        await call.answer()
+        return
+
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    # ✅ ВАЖНО: creditors — это НЕ текстовое поле, а отдельное меню
+    if field == "creditors":
+        await state.clear()
+        await state.update_data(card_case_id=cid)
+        await send_creditors_menu(call.message, uid, cid)
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.update_data(card_cid=cid, card_field=field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    prompt = CASE_CARD_FIELD_META[field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
+    await call.message.answer(prompt)
+    await call.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 3)
+async def case_edit_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    from bot import get_case, CaseEdit
+
+    _, _, cid_str, field = call.data.split(":")
+    cid = int(cid_str)
+
+    # проверим, что дело существует и твоё
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.update_data(edit_cid=cid, edit_field=field)
+    await state.set_state(CaseEdit.value)
+
+    field_titles = {
+        "case_number": "номер дела",
+        "court": "суд",
+        "judge": "судью",
+        "fin_manager": "финансового управляющего",
+        "stage": "стадию",
+        "notes": "заметки",
+    }
+    title = field_titles.get(field, field)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❌ Отмена", callback_data=f"case:edit:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer(
+        f"Введи новое значение для «{title}».\nЕсли нужно очистить поле — отправь `-`.",
+        reply_markup=kb.as_markup(),
+    )
+
+    await call.answer()
