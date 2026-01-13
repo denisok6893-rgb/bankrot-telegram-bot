@@ -294,3 +294,224 @@ async def case_file_send_by_index(call: CallbackQuery):
 
     await call.message.answer_document(FSInputFile(path))
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    # формат: case:file:<case_id>:<filename>
+    parts = call.data.split(":", 3)
+    if len(parts) != 4:
+        await call.answer("Некорректная команда")
+        return
+
+    case_id = int(parts[2])
+    filename = parts[3]
+
+    if ("/" in filename) or ("\\" in filename) or (".." in filename):
+        await call.message.answer("Некорректное имя файла.")
+        await call.answer()
+        return
+
+    GENERATED_DIR = get_generated_dir()
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    path = case_dir / filename
+
+    if not path.exists():
+        await call.message.answer("Файл не найден (возможно, удалён).")
+        await call.answer()
+        return
+
+    await call.message.answer_document(
+        FSInputFile(path),
+        caption=f"📄 Документ по делу #{case_id}",
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "noop")
+async def noop(call: CallbackQuery):
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("case:gen:"))
+async def case_generate_from_case_docs(call: CallbackQuery, state: FSMContext):
+    """
+    Генерация нового документа прямо из "Документы по делу"
+    callback_data: case:gen:<case_id>:petition|online
+    """
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) != 4:
+        await call.message.answer("Некорректная команда.")
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    doc_kind = parts[3]
+
+    # Import helper functions from bot.py
+    from bot import get_case, get_case_card, validate_case_card, build_bankruptcy_petition_doc, _humanize_missing
+
+    case_row = get_case(uid, case_id)
+    if not case_row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    # сохраняем выбранное дело в state
+    await state.update_data(docs_case_id=case_id)
+
+    if doc_kind == "petition":
+        card = get_case_card(uid, case_id)
+        if not card:
+            await call.message.answer("Карточка дела ещё не заполнена. Сначала заполни карточку дела.")
+            await call.answer()
+            return
+
+        validation = validate_case_card(card)
+        missing = validation.get("missing", []) if isinstance(validation, dict) else (validation or [])
+
+        if missing:
+            await call.message.answer(
+                "Не хватает обязательных данных в карточке дела:\n"
+                + "- " + _humanize_missing(missing).replace(", ", "\n- ")
+                + "\n\nНажми «Редактирование карточки» и заполни поля по шагам."
+            )
+            await call.answer()
+            return
+
+        path = await build_bankruptcy_petition_doc(case_row, card)
+        await call.message.answer_document(
+            FSInputFile(path),
+            caption=f"Готово ✅ Заявление о банкротстве (дело #{case_id})",
+        )
+
+    else:
+        await call.message.answer("Неизвестный тип документа.")
+        await call.answer()
+        return
+
+    # после генерации — сразу показать обновлённый архив
+    fake = type("X", (), {})()
+    fake.from_user = call.from_user
+    fake.data = f"case:docs:{case_id}"
+    fake.message = call.message
+
+    await case_docs(fake, state)
+    await call.answer()
+
+@router.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 2)
+async def case_edit_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    await state.clear()
+
+
+
+
+    # --- EDIT MENU SHELL (no docs, no CaseCardFill) ---
+
+    from bot import get_case
+    import logging
+    logger = logging.getLogger(__name__)
+
+    row = get_case(uid, case_id)
+
+    if not row:
+
+        await call.message.answer("Дело не найдено.")
+
+        await call.answer()
+
+        return
+
+
+
+    try:
+
+        case_number = row[2] if len(row) > 2 else ""
+
+        stage = row[3] if len(row) > 3 else ""
+
+        court = row[5] if len(row) > 5 else ""
+
+        judge = row[6] if len(row) > 6 else ""
+
+        fin_manager = row[7] if len(row) > 7 else ""
+
+        notes = row[8] if len(row) > 8 else ""
+
+    except (IndexError, TypeError) as e:
+        logger.warning(f"Failed to parse case row: {e}")
+        case_number = stage = court = judge = fin_manager = notes = ""
+
+
+
+    text = (
+
+        f"✏️ Редактирование карточки дела #{case_id}\n\n"
+
+        f"Номер дела: {case_number or '—'}\n"
+
+        f"Суд: {court or '—'}\n"
+
+        f"Судья: {judge or '—'}\n"
+
+        f"ФУ: {fin_manager or '—'}\n"
+
+        f"Стадия: {stage or '—'}\n"
+
+        f"Заметки: {notes or '—'}"
+
+    )
+
+
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="📋 Показать карточку дела", callback_data=f"case:card:{case_id}")
+
+    kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{case_id}:case_number")
+
+    kb.button(text="✏️ Суд", callback_data=f"case:edit:{case_id}:court")
+
+    kb.button(text="✏️ Судья", callback_data=f"case:edit:{case_id}:judge")
+
+    kb.button(text="✏️ ФУ", callback_data=f"case:edit:{case_id}:fin_manager")
+
+    kb.button(text="✏️ Стадия", callback_data=f"case:edit:{case_id}:stage")
+
+    kb.button(text="🗒 Заметки", callback_data=f"case:edit:{case_id}:notes")
+
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
+
+    kb.adjust(1, 2, 2, 2, 1)
+
+
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+
+    await call.answer()
+
+
+@router.callback_query(lambda c: c.data == "back:cases")
+async def back_to_cases(call: CallbackQuery):
+    from bankrot_bot.keyboards.menus import cases_menu_ikb
+    await call.message.answer(
+        "Раздел «Дела». Выбери действие:",
+        reply_markup=cases_menu_ikb()
+    )
+    await call.answer()
