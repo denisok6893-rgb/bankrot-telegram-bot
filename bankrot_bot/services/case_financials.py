@@ -197,3 +197,39 @@ def parse_amount_input(text: str) -> Decimal:
         return Decimal(text)
     except Exception:
         return Decimal(0)
+
+
+def normalize_amount_to_string(text: str) -> Optional[str]:
+    """
+    Парсинг и нормализация суммы для JSON-safe хранения в FSM state.
+
+    Принимает: "100000", "100 000", "100 000.50", "100000,50", "1 200 000"
+    Возвращает нормализованную строку: "100000.00", "100000.50", "1200000.00" или None при ошибке.
+
+    Эта функция безопасна для Redis FSM storage (JSON-serializable).
+    """
+    text = text.strip().replace(" ", "").replace(",", ".")
+    try:
+        amount = Decimal(text)
+        if amount < 0:
+            return None
+        # Normalize to 2 decimal places as string
+        return str(amount.quantize(Decimal("0.01")))
+    except Exception:
+        return None
+
+
+def string_to_decimal(amount_str: str) -> Decimal:
+    """
+    Конвертация нормализованной строки обратно в Decimal для DB.
+
+    Args:
+        amount_str: Нормализованная строка вида "100000.00"
+
+    Returns:
+        Decimal значение
+    """
+    try:
+        return Decimal(amount_str)
+    except Exception:
+        return Decimal(0)
