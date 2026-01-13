@@ -260,6 +260,10 @@ def case_parties_ikb(case_id: int, parties: list, creditors_count: int, debtors_
     kb.button(text=f"➕ Добавить кредитора (всего: {creditors_count})", callback_data=f"party:add_creditor:{case_id}")
     kb.button(text=f"➕ Добавить должника (всего: {debtors_count})", callback_data=f"party:add_debtor:{case_id}")
 
+    # Кнопка генерации документа
+    if parties:
+        kb.button(text="📄 Сгенерировать список (DOCX)", callback_data=f"party:generate_doc:{case_id}")
+
     # Список записей (первые 10)
     for p in parties[:10]:
         party_id = p.id
@@ -292,6 +296,10 @@ def case_assets_ikb(case_id: int, assets: list, total_value: float) -> InlineKey
     # Кнопка добавления
     total_text = f"{total_value:.2f}" if total_value else "0.00"
     kb.button(text=f"➕ Добавить имущество (всего: {total_text} ₽)", callback_data=f"asset:add:{case_id}")
+
+    # Кнопка генерации документа
+    if assets:
+        kb.button(text="📄 Сгенерировать опись (DOCX)", callback_data=f"asset:generate_doc:{case_id}")
 
     # Список записей (первые 10)
     for a in assets[:10]:
