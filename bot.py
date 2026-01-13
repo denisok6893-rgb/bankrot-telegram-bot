@@ -3736,7 +3736,95 @@ async def case_cmd(message: Message):
 
 
 # =========================
-# callbacks
+# FSM handlers for AddParty and AddAsset (must be BEFORE catch-all!)
+# =========================
+
+@dp.message(AddParty.name)
+async def process_party_name(message: Message, state: FSMContext):
+    """Обработать ввод имени кредитора/должника."""
+    logger.info(f"User {message.from_user.id} entered party name in AddParty FSM")
+    await state.update_data(name=message.text.strip())
+    await message.answer("Введите сумму (например: 100000 или 100 000.50):")
+    await state.set_state(AddParty.amount)
+
+
+@dp.message(AddParty.amount)
+async def process_party_amount(message: Message, state: FSMContext):
+    """Обработать ввод суммы."""
+    logger.info(f"User {message.from_user.id} entered party amount in AddParty FSM")
+    amount = parse_amount_input(message.text)
+    await state.update_data(amount=amount)
+    await message.answer("Введите основание требования/долга (или '-' для пропуска):")
+    await state.set_state(AddParty.basis)
+
+
+@dp.message(AddParty.basis)
+async def process_party_basis(message: Message, state: FSMContext):
+    """Завершить добавление кредитора/должника."""
+    logger.info(f"User {message.from_user.id} completing AddParty FSM")
+    basis = message.text.strip() if message.text.strip() != "-" else None
+
+    data = await state.get_data()
+    case_id = data["case_id"]
+    role = data["role"]
+    name = data["name"]
+    amount = data["amount"]
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        await add_case_party(session, case_id, role, name, amount, basis=basis)
+        await session.commit()
+        logger.info(f"User {message.from_user.id} added party to case {case_id}: {name}, {amount}")
+
+    role_text = "Кредитор" if role == "creditor" else "Должник"
+    await message.answer(f"✅ {role_text} добавлен: {name}, сумма: {amount:.2f} ₽")
+    await state.clear()
+
+
+@dp.message(AddAsset.kind)
+async def process_asset_kind(message: Message, state: FSMContext):
+    """Обработать ввод вида имущества."""
+    logger.info(f"User {message.from_user.id} entered asset kind in AddAsset FSM")
+    await state.update_data(kind=message.text.strip())
+    await message.answer("Введите описание (адрес, марка, реквизиты и т.п.):")
+    await state.set_state(AddAsset.description)
+
+
+@dp.message(AddAsset.description)
+async def process_asset_description(message: Message, state: FSMContext):
+    """Обработать ввод описания."""
+    logger.info(f"User {message.from_user.id} entered asset description in AddAsset FSM")
+    await state.update_data(description=message.text.strip())
+    await message.answer("Введите стоимость (или '-' для пропуска):")
+    await state.set_state(AddAsset.value)
+
+
+@dp.message(AddAsset.value)
+async def process_asset_value(message: Message, state: FSMContext):
+    """Завершить добавление имущества."""
+    logger.info(f"User {message.from_user.id} completing AddAsset FSM")
+    value_text = message.text.strip()
+    value = parse_amount_input(value_text) if value_text != "-" else None
+
+    data = await state.get_data()
+    case_id = data["case_id"]
+    kind = data["kind"]
+    description = data["description"]
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        await add_case_asset(session, case_id, kind, description, value=value)
+        await session.commit()
+        logger.info(f"User {message.from_user.id} added asset to case {case_id}: {kind}, {value}")
+
+    value_str = f"{float(value):.2f} ₽" if value else "не указана"
+    await message.answer(f"✅ Имущество добавлено:\n{kind}\nСтоимость: {value_str}")
+    await state.clear()
+
+
+# =========================
+# Catch-all message handler (must be AFTER FSM handlers!)
+# =========================
 @dp.message()
 async def main_text_router(message: Message, state: FSMContext):
     # Если идёт FSM (создание дела и т.п.) — не мешаем
@@ -3842,44 +3930,6 @@ async def start_add_party(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@dp.message(AddParty.name)
-async def process_party_name(message: Message, state: FSMContext):
-    """Обработать ввод имени кредитора/должника."""
-    await state.update_data(name=message.text.strip())
-    await message.answer("Введите сумму (например: 100000 или 100 000.50):")
-    await state.set_state(AddParty.amount)
-
-
-@dp.message(AddParty.amount)
-async def process_party_amount(message: Message, state: FSMContext):
-    """Обработать ввод суммы."""
-    amount = parse_amount_input(message.text)
-    await state.update_data(amount=amount)
-    await message.answer("Введите основание требования/долга (или '-' для пропуска):")
-    await state.set_state(AddParty.basis)
-
-
-@dp.message(AddParty.basis)
-async def process_party_basis(message: Message, state: FSMContext):
-    """Завершить добавление кредитора/должника."""
-    basis = message.text.strip() if message.text.strip() != "-" else None
-
-    data = await state.get_data()
-    case_id = data["case_id"]
-    role = data["role"]
-    name = data["name"]
-    amount = data["amount"]
-
-    from bankrot_bot.database import get_session
-    async with get_session() as session:
-        await add_case_party(session, case_id, role, name, amount, basis=basis)
-        await session.commit()
-
-    role_text = "Кредитор" if role == "creditor" else "Должник"
-    await message.answer(f"✅ {role_text} добавлен: {name}, сумма: {amount:.2f} ₽")
-    await state.clear()
-
-
 @dp.callback_query(F.data.startswith("party:view:"))
 async def view_party(call: CallbackQuery):
     """Просмотр кредитора/должника."""
@@ -3982,43 +4032,6 @@ async def start_add_asset(call: CallbackQuery, state: FSMContext):
 
     await call.message.answer("Добавление имущества\n\nВведите вид имущества (например: квартира, автомобиль, акции):")
     await call.answer()
-
-
-@dp.message(AddAsset.kind)
-async def process_asset_kind(message: Message, state: FSMContext):
-    """Обработать ввод вида имущества."""
-    await state.update_data(kind=message.text.strip())
-    await message.answer("Введите описание (адрес, марка, реквизиты и т.п.):")
-    await state.set_state(AddAsset.description)
-
-
-@dp.message(AddAsset.description)
-async def process_asset_description(message: Message, state: FSMContext):
-    """Обработать ввод описания."""
-    await state.update_data(description=message.text.strip())
-    await message.answer("Введите стоимость (или '-' для пропуска):")
-    await state.set_state(AddAsset.value)
-
-
-@dp.message(AddAsset.value)
-async def process_asset_value(message: Message, state: FSMContext):
-    """Завершить добавление имущества."""
-    value_text = message.text.strip()
-    value = parse_amount_input(value_text) if value_text != "-" else None
-
-    data = await state.get_data()
-    case_id = data["case_id"]
-    kind = data["kind"]
-    description = data["description"]
-
-    from bankrot_bot.database import get_session
-    async with get_session() as session:
-        await add_case_asset(session, case_id, kind, description, value=value)
-        await session.commit()
-
-    value_str = f"{float(value):.2f} ₽" if value else "не указана"
-    await message.answer(f"✅ Имущество добавлено:\n{kind}\nСтоимость: {value_str}")
-    await state.clear()
 
 
 @dp.callback_query(F.data.startswith("asset:view:"))
