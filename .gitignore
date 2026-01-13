@@ -36,3 +36,6 @@ generated/
 
 # local patch drafts
 /_patches/
+
+# Local backups
+_local_backups/

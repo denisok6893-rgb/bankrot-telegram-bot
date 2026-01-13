@@ -17,4 +17,8 @@ from bankrot_bot.keyboards.menus import (
     docs_catalog_ikb,
     docs_category_ikb,
     docs_item_ikb,
+    case_parties_ikb,
+    party_view_ikb,
+    case_assets_ikb,
+    asset_view_ikb,
 )
