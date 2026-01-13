@@ -12,10 +12,21 @@ from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Import shared utilities and services
-# from services.database import get_case_by_id, update_case_status
-# from services.docx_forms import generate_document
-# from keyboards import get_main_menu, get_case_menu, get_docs_menu
+# Import keyboard builders from bot.py's keyboards module
+from bankrot_bot.keyboards.menus import (
+    home_ikb,
+    profile_ikb,
+    docs_catalog_ikb,
+    help_ikb,
+    my_cases_ikb,
+)
+
+# Import helper functions from bot.py
+# NOTE: These should eventually be moved to utils module
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bot import is_allowed, list_cases
 
 
 # Create router for callback handlers
@@ -29,36 +40,80 @@ callback_router = Router(name="callbacks")
 @callback_router.callback_query(F.data == "menu:home")
 async def menu_home(call: CallbackQuery):
     """Navigate to home/main menu"""
-    # TODO: Extract from bot.py:1473
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("Главное меню:", reply_markup=home_ikb())
     await call.answer()
-    # Original implementation here
 
 
 @callback_router.callback_query(F.data == "menu:profile")
 async def menu_profile(call: CallbackQuery):
     """Show user profile"""
-    # TODO: Extract from bot.py:1483
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("👤 Мой профиль:", reply_markup=profile_ikb())
     await call.answer()
 
 
 @callback_router.callback_query(F.data == "menu:docs")
 async def menu_docs(call: CallbackQuery):
-    """Show documents menu"""
-    # TODO: Extract from bot.py:1493
+    """Публичный каталог документов - доступен всем."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "📄 Публичный каталог документов\n\n"
+        "Здесь вы найдете шаблоны и образцы документов для банкротства.\n"
+        "Выберите категорию:",
+        reply_markup=docs_catalog_ikb()
+    )
     await call.answer()
 
 
 @callback_router.callback_query(F.data == "menu:help")
 async def menu_help(call: CallbackQuery):
-    """Show help menu"""
-    # TODO: Extract from bot.py:1509
+    """Подменю раздела Помощь."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "❓ Раздел помощи\n\n"
+        "Выберите интересующую тему:",
+        reply_markup=help_ikb(),
+    )
     await call.answer()
 
 
 @callback_router.callback_query(F.data == "menu:my_cases")
 async def menu_my_cases(call: CallbackQuery, state: FSMContext):
-    """Show user's bankruptcy cases"""
-    # TODO: Extract from bot.py:1526
+    """Раздел «Мои дела» - интеграция с модулем cases."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+
+    # Получить активное дело из state (если есть)
+    data = await state.get_data()
+    active_case_id = data.get("active_case_id")
+
+    text = "📂 Мои дела\n\n"
+    if rows:
+        text += f"У вас {len(rows)} дел(а/о).\n"
+        if active_case_id:
+            text += f"Активное дело: #{active_case_id}\n"
+        text += "Выберите дело для работы или создайте новое."
+    else:
+        text += "У вас пока нет дел. Создайте первое дело для работы."
+
+    await call.message.answer(text, reply_markup=my_cases_ikb(rows, active_case_id))
     await call.answer()
 
 
