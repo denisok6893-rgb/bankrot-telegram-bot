@@ -107,6 +107,7 @@ class CreditorsFill(StatesGroup):
     debt_rubles = State()
     debt_kopeks = State()
     note = State()
+    creditors_text = State()  # For bulk creditor text input
 
 class AddParty(StatesGroup):
     """FSM для добавления кредитора/должника."""
@@ -119,7 +120,6 @@ class AddAsset(StatesGroup):
     kind = State()
     description = State()
     value = State()
-    creditors_text = State()
 
 # =========================
 # env
