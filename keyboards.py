@@ -8,8 +8,13 @@ from bankrot_bot.keyboards.menus import (
     case_card_ikb,
     docs_home_ikb,
     help_ikb,
+    help_item_ikb,
     docs_menu_ikb,
     case_files_ikb,
     case_archive_ikb,
     cases_menu_ikb,
+    my_cases_ikb,
+    docs_catalog_ikb,
+    docs_category_ikb,
+    docs_item_ikb,
 )

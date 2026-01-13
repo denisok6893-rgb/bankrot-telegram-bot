@@ -21,6 +21,12 @@ from bankrot_bot.services.blocks import (
     build_vehicle_block,
     build_attachments_list,
 )
+from bankrot_bot.services.public_docs import (
+    get_categories,
+    get_docs_in_category,
+    get_document,
+    CATEGORY_TITLES,
+)
 
 import aiohttp
 setup_logging()
@@ -46,10 +52,15 @@ from bankrot_bot.keyboards.menus import (
     case_card_ikb,
     docs_home_ikb,
     help_ikb,
+    help_item_ikb,
     docs_menu_ikb,
     case_files_ikb,
     case_archive_ikb,
     cases_menu_ikb,
+    my_cases_ikb,
+    docs_catalog_ikb,
+    docs_category_ikb,
+    docs_item_ikb,
 )
 
 class CaseCreate(StatesGroup):
@@ -1428,29 +1439,259 @@ async def menu_profile(call: CallbackQuery):
 
 @dp.callback_query(F.data == "menu:docs")
 async def menu_docs(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-    await call.message.answer("📄 Документы (общий раздел):", reply_markup=docs_home_ikb())
-    await call.answer()
-
-
-@dp.callback_query(F.data == "menu:help")
-async def menu_help(call: CallbackQuery):
+    """Публичный каталог документов - доступен всем."""
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
         return
     await call.message.answer(
-        "❓ Помощь:\n"
-        "1) Главное меню → «Мой профиль»\n"
-        "2) В профиле → «Дела»\n"
-        "3) Внутри дела: «Документы по делу» или «Редактирование карточки»",
+        "📄 Публичный каталог документов\n\n"
+        "Здесь вы найдете шаблоны и образцы документов для банкротства.\n"
+        "Выберите категорию:",
+        reply_markup=docs_catalog_ikb()
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data == "menu:help")
+async def menu_help(call: CallbackQuery):
+    """Подменю раздела Помощь."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "❓ Раздел помощи\n\n"
+        "Выберите интересующую тему:",
         reply_markup=help_ikb(),
     )
     await call.answer()
 
+
+# ========== Новые хэндлеры главного меню ==========
+
+@dp.callback_query(F.data == "menu:my_cases")
+async def menu_my_cases(call: CallbackQuery, state: FSMContext):
+    """Раздел «Мои дела» - интеграция с модулем cases."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+
+    # Получить активное дело из state (если есть)
+    data = await state.get_data()
+    active_case_id = data.get("active_case_id")
+
+    text = "📂 Мои дела\n\n"
+    if rows:
+        text += f"У вас {len(rows)} дел(а/о).\n"
+        if active_case_id:
+            text += f"Активное дело: #{active_case_id}\n"
+        text += "Выберите дело для работы или создайте новое."
+    else:
+        text += "У вас пока нет дел. Создайте первое дело для работы."
+
+    await call.message.answer(text, reply_markup=my_cases_ikb(rows, active_case_id))
+    await call.answer()
+
+
+@dp.callback_query(F.data == "ai:placeholder")
+async def ai_placeholder(call: CallbackQuery):
+    """Заглушка для ИИ-помощника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await call.answer("🤖 ИИ-помощник в разработке. Скоро будет доступен!", show_alert=True)
+
+
+# ========== Хэндлеры раздела «Помощь» ==========
+
+@dp.callback_query(F.data == "help:howto")
+async def help_howto(call: CallbackQuery):
+    """Как пользоваться ботом."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    text = (
+        "📖 Как пользоваться ботом\n\n"
+        "1️⃣ Главное меню\n"
+        "В главном меню три раздела:\n"
+        "• Мои дела - управление делами о банкротстве\n"
+        "• Документы - публичный каталог образцов\n"
+        "• Помощь - справочная информация\n\n"
+        "2️⃣ Работа с делами\n"
+        "• Создайте карточку дела\n"
+        "• Заполните данные должника и кредиторов\n"
+        "• Генерируйте документы по делу\n\n"
+        "3️⃣ Навигация\n"
+        "Используйте кнопки для перемещения между разделами.\n"
+        "Кнопка 🏠 всегда возвращает в главное меню."
+    )
+
+    await call.message.answer(text, reply_markup=help_item_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "help:cases")
+async def help_cases(call: CallbackQuery):
+    """Что такое карточки дел."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    text = (
+        "📋 Карточки дел\n\n"
+        "Карточка дела - это структурированное хранилище информации "
+        "по конкретному делу о банкротстве.\n\n"
+        "Что хранится:\n"
+        "• Данные должника (ФИО, адрес, паспорт)\n"
+        "• Информация о кредиторах\n"
+        "• Сумма задолженности\n"
+        "• Документы по делу\n"
+        "• История изменений\n\n"
+        "Карточка привязана к вашему Telegram-аккаунту и доступна только вам.\n\n"
+        "На основе данных карточки бот может генерировать юридические документы."
+    )
+
+    await call.message.answer(text, reply_markup=help_item_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "help:docs")
+async def help_docs(call: CallbackQuery):
+    """О документах."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    text = (
+        "📄 О документах\n\n"
+        "Бот работает с двумя типами документов:\n\n"
+        "1️⃣ Публичный каталог\n"
+        "Образцы и шаблоны документов, доступные всем пользователям:\n"
+        "• Заявления\n"
+        "• Ходатайства\n"
+        "• Прочие документы\n\n"
+        "2️⃣ Документы по делу\n"
+        "Генерируются автоматически на основе данных вашей карточки дела.\n"
+        "Привязаны к конкретному делу и хранятся в вашем архиве.\n\n"
+        "Все документы формируются в формате DOCX и готовы к использованию."
+    )
+
+    await call.message.answer(text, reply_markup=help_item_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "help:contacts")
+async def help_contacts(call: CallbackQuery):
+    """Контакты и обратная связь."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    text = (
+        "✉️ Контакты и обратная связь\n\n"
+        "По всем вопросам работы бота:\n"
+        "• Сообщите об ошибке\n"
+        "• Предложите улучшение\n"
+        "• Задайте вопрос\n\n"
+        "📧 Email: support@example.com\n"
+        "💬 Telegram: @support_username\n\n"
+        "Мы постоянно работаем над улучшением сервиса. "
+        "Ваши отзывы помогают делать бота лучше!"
+    )
+
+    await call.message.answer(text, reply_markup=help_item_ikb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "help:about")
+async def help_about(call: CallbackQuery):
+    """О боте."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    text = (
+        "ℹ️ О боте\n\n"
+        "Telegram-бот помощник по банкротству физических лиц.\n\n"
+        "Возможности:\n"
+        "• Управление карточками дел\n"
+        "• Генерация юридических документов\n"
+        "• Каталог образцов документов\n"
+        "• Справочная информация\n\n"
+        "Версия: 1.0.0\n"
+        "Статус: MVP (минимальный рабочий продукт)\n\n"
+        "Бот находится в активной разработке. "
+        "Следите за обновлениями!"
+    )
+
+    await call.message.answer(text, reply_markup=help_item_ikb())
+    await call.answer()
+
+
+# ========== Хэндлеры публичного каталога документов ==========
+
+@dp.callback_query(F.data.startswith("docs_cat:"))
+async def docs_category(call: CallbackQuery):
+    """Показать документы в категории."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    category = call.data.split(":")[-1]
+    docs = get_docs_in_category(category)
+
+    if not docs:
+        await call.answer("Документы в этой категории пока отсутствуют.", show_alert=True)
+        return
+
+    category_title = CATEGORY_TITLES.get(category, "Документы")
+    text = f"{category_title}\n\nВыберите документ для просмотра:"
+
+    await call.message.answer(text, reply_markup=docs_category_ikb(category, docs))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("docs_item:"))
+async def docs_item(call: CallbackQuery):
+    """Показать карточку документа."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) < 3:
+        await call.answer("Ошибка в данных.", show_alert=True)
+        return
+
+    category = parts[1]
+    doc_id = parts[2]
+
+    doc = get_document(category, doc_id)
+    if not doc:
+        await call.answer("Документ не найден.", show_alert=True)
+        return
+
+    text = f"📄 {doc['title']}\n\n{doc['description']}"
+
+    await call.message.answer(text, reply_markup=docs_item_ikb(category))
+    await call.answer()
+
+
+# ========== Старые хэндлеры (для совместимости) ==========
 
 @dp.callback_query(F.data == "profile:cases")
 async def profile_cases(call: CallbackQuery):
