@@ -39,6 +39,10 @@ from bankrot_bot.services.case_financials import (
     calculate_assets_total,
     parse_amount_input,
 )
+from bankrot_bot.services.docx_forms import (
+    render_creditors_list,
+    render_inventory,
+)
 
 import aiohttp
 setup_logging()
@@ -46,7 +50,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, Message, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, FSInputFile, BufferedInputFile, Message, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from bankrot_bot.config import load_settings
@@ -4146,6 +4150,70 @@ async def delete_asset(call: CallbackQuery):
         else:
             await call.answer("Ошибка удаления", show_alert=True)
     await call.answer()
+
+
+# ========== DOCX Generation Handlers ==========
+
+@dp.callback_query(F.data.startswith("party:generate_doc:"))
+async def generate_creditors_doc(call: CallbackQuery):
+    """Генерация списка кредиторов и должников в DOCX."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    case_id = int(parts[2])
+
+    await call.answer("Генерирую документ...")
+
+    try:
+        # Генерация DOCX из шаблона
+        doc_bytes = await render_creditors_list(case_id)
+
+        # Создание файла для отправки
+        filename = f"creditors_list_case_{case_id}.docx"
+        input_file = BufferedInputFile(doc_bytes, filename=filename)
+
+        # Отправка документа пользователю
+        await call.message.answer_document(
+            input_file,
+            caption="📄 Список кредиторов и должников"
+        )
+    except Exception as e:
+        logger.error(f"Error generating creditors list: {e}", exc_info=True)
+        await call.message.answer("❌ Ошибка при генерации документа. Проверьте, что вы заполнили профиль должника.")
+
+
+@dp.callback_query(F.data.startswith("asset:generate_doc:"))
+async def generate_inventory_doc(call: CallbackQuery):
+    """Генерация описи имущества в DOCX."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    case_id = int(parts[2])
+
+    await call.answer("Генерирую документ...")
+
+    try:
+        # Генерация DOCX из шаблона
+        doc_bytes = await render_inventory(case_id)
+
+        # Создание файла для отправки
+        filename = f"inventory_case_{case_id}.docx"
+        input_file = BufferedInputFile(doc_bytes, filename=filename)
+
+        # Отправка документа пользователю
+        await call.message.answer_document(
+            input_file,
+            caption="📄 Опись имущества гражданина"
+        )
+    except Exception as e:
+        logger.error(f"Error generating inventory: {e}", exc_info=True)
+        await call.message.answer("❌ Ошибка при генерации документа. Проверьте, что вы заполнили профиль должника.")
 
 
 async def main():
