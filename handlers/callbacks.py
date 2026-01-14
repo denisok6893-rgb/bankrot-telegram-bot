@@ -1,11 +1,12 @@
 """
-Callback Handlers - Phase 8, 9, 10
+Callback Handlers - Phase 8, 9, 10, 11
 Migrated from bot.py to modular handlers.
 
 Phase 8-9: CASE callbacks (9 handlers) ✅
 Phase 10: PROFILE & AI/MISC callbacks (5 handlers) ✅
+Phase 11: NAVIGATION & DOCS callbacks (5 handlers) ✅
 
-Total: 14 callbacks migrated
+Total: 19 callbacks migrated (~33% of ~58 total)
 """
 
 # ============================================================================
@@ -507,4 +508,106 @@ async def noop(call: CallbackQuery):
 @dp.callback_query(lambda c: c.data == "back:main")
 async def back_to_main(call: CallbackQuery):
     await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
+    await call.answer()
+
+
+# ============================================================================
+# NAVIGATION CALLBACKS (case:list, case:new, back:*)
+# Phase 11
+# ============================================================================
+
+# Lines 2458-2468 from bot.py
+@dp.callback_query(lambda c: c.data == "case:new")
+async def case_new(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.set_state(CaseCreate.code_name)
+    await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
+    await call.answer()
+
+
+# Lines 2657-2684 from bot.py
+@dp.callback_query(lambda c: c.data == "case:list")
+async def case_list(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)  # берём последние 20 дел
+    if not rows:
+        await call.message.answer("Пока нет дел. Нажми «➕ Создать дело».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = ["📄 Ваши дела (последние 20):"]
+
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        st = stage or "-"
+        lines.append(f"#{cid} | {code_name} | № {num} | стадия: {st}")
+        kb.button(text=f"Открыть #{cid}", callback_data=f"case:open:{cid}")
+        kb.button(text="🗂 Заполнить карточку дела", callback_data = f"case:card:{cid}")
+
+    kb.button(text="🔙 Назад", callback_data="back:cases")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+# Lines 2686-2692 from bot.py
+@dp.callback_query(lambda c: c.data == "back:cases")
+async def back_to_cases(call: CallbackQuery):
+    await call.message.answer(
+        "Раздел «Дела». Выбери действие:",
+        reply_markup=cases_menu_ikb()
+    )
+    await call.answer()
+
+
+# ============================================================================
+# DOCS CALLBACKS (docs:back_menu, docs:choose_case)
+# Phase 11
+# ============================================================================
+
+# Lines 2376-2380 from bot.py
+@dp.callback_query(lambda c: c.data == "docs:back_menu")
+async def docs_back_menu(call: CallbackQuery, state: FSMContext):
+    cid = await _selected_case_id(state)
+    await call.message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb(cid))
+    await call.answer()
+
+
+# Lines 2241-2266 from bot.py
+@dp.callback_query(lambda c: c.data == "docs:choose_case")
+async def docs_choose_case(call: CallbackQuery):
+    """Показывает список дел для выбора дела для документов."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    rows = list_cases(uid)
+    if not rows:
+        await call.message.answer("Пока нет дел. Создай дело через «📂 Дела».")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = ["📄 Выбери дело для генерации документов:"]
+    for (cid, code_name, case_number, stage, updated_at) in rows:
+        num = case_number or "-"
+        lines.append(f"#{cid} | {code_name} | № {num}")
+        kb.button(text=f"Дело #{cid}: {code_name}", callback_data=f"docs:case:{cid}")
+
+    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
