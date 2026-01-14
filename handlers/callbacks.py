@@ -1,10 +1,16 @@
 """
-CASE callbacks - Phase 8 & 9 (COMPLETE)
+Callback Handlers - Phase 8, 9, 10
 Migrated from bot.py to modular handlers.
+
+Phase 8-9: CASE callbacks (9 handlers) ✅
+Phase 10: PROFILE & AI/MISC callbacks (5 handlers) ✅
+
+Total: 14 callbacks migrated
 """
 
 # ============================================================================
 # CASE CALLBACKS - COMPLETE (9 callbacks total)
+# Phase 8-9
 # ============================================================================
 
 # Lines 2072-2166 from bot.py
@@ -420,3 +426,85 @@ async def case_edit_apply(message: Message, state: FSMContext):
     fake.data = f"case:edit:{cid}"
     fake.message = message
     await case_edit_menu(fake, state)
+
+
+# ============================================================================
+# PROFILE CALLBACKS (profile:*)
+# Phase 10
+# ============================================================================
+
+# Lines 2198-2227 from bot.py
+@dp.callback_query(lambda c: c.data == "profile:menu")
+async def profile_menu(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    row = get_profile(uid)
+
+    if not row:
+        text = "Профиль пока не заполнен.\n\nНажми «✏️ Заполнить профиль»."
+    else:
+        _, full_name, role, address, phone, email, *_ = row
+        text = (
+            "👤 Мой профиль:\n"
+            f"ФИО/Орг: {full_name or '-'}\n"
+            f"Статус: {role or '-'}\n"
+            f"Адрес: {address or '-'}\n"
+            f"Телефон: {phone or '-'}\n"
+            f"Email: {email or '-'}\n\n"
+            "Нажми «✏️ Заполнить профиль», чтобы изменить."
+        )
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Заполнить профиль", callback_data="profile:edit")
+    kb.button(text="🔙 Назад", callback_data="docs:back_menu")
+    kb.adjust(1)
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+    await call.answer()
+
+
+# Lines 2228-2238 from bot.py
+@dp.callback_query(lambda c: c.data == "profile:edit")
+async def profile_edit_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await state.clear()
+    await state.set_state(ProfileFill.full_name)
+    await call.message.answer("Введи ФИО или название организации (как будет в документах).")
+    await call.answer()
+
+
+# ============================================================================
+# AI & MISC CALLBACKS
+# Phase 10
+# ============================================================================
+
+# Lines 1552-1560 from bot.py
+@dp.callback_query(F.data == "ai:placeholder")
+async def ai_placeholder(call: CallbackQuery):
+    """Заглушка для ИИ-помощника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    await call.answer("🤖 ИИ-помощник в разработке. Скоро будет доступен!", show_alert=True)
+
+
+# Lines 1999-2001 from bot.py
+@dp.callback_query(F.data == "noop")
+async def noop(call: CallbackQuery):
+    await call.answer()
+
+
+# Lines 2385-2388 from bot.py
+@dp.callback_query(lambda c: c.data == "back:main")
+async def back_to_main(call: CallbackQuery):
+    await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
+    await call.answer()
