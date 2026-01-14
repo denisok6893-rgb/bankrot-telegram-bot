@@ -1,69 +1,48 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:16
-    container_name: bankrot_postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-bankrot}
-      POSTGRES_USER: ${POSTGRES_USER:-bankrot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bankrot_password}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
     volumes:
-    - bankrot_pg_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test:
-      - CMD-SHELL
-      - pg_isready -U ${POSTGRES_USER:-bankrot} -d ${POSTGRES_DB:-bankrot}
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
+
   redis:
     image: redis:7-alpine
-    container_name: bankrot_redis
-    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
     volumes:
-    - bankrot_redis_data:/data
+      - redis_data:/data
     healthcheck:
-      test:
-      - CMD
-      - redis-cli
-      - ping
-      interval: 5s
-      timeout: 3s
-      retries: 10
-  bankrot_bot:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot:
     build: .
-    container_name: bankrot_bot
-    env_file:
-    - .env
-    restart: unless-stopped
-    working_dir: /app
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-bankrot}:${POSTGRES_PASSWORD:-bankrot_password}@postgres:5432/${POSTGRES_DB:-bankrot}
-      REDIS_URL: redis://redis:6379/0
-      DB_PATH: /app/bankrot.db
     volumes:
-    - ./generated:/app/generated
-    - ./logs:/app/logs
-    - ./templates:/app/templates:ro
-    - ./bankrot.db:/app/bankrot.db
-  bankrot_web:
-    build: .
-    command:
-    - uvicorn
-    - web:app
-    - --host
-    - 0.0.0.0
-    - --port
-    - '8101'
-    ports:
-    - 127.0.0.1:8101:8101
-    depends_on:
-    - bankrot_bot
-    restart: unless-stopped
+      - .:/app
+    command: python bot.py
+
 volumes:
-  bankrot_pg_data: null
-  bankrot_redis_data: null
+  postgres_data:
+  redis_data:

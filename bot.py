@@ -8,6 +8,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from dotenv import load_dotenv
+load_dotenv()
+
 from bankrot_bot.logging_setup import setup_logging
 from bankrot_bot.services.gigachat import gigachat_chat
 
@@ -4259,7 +4262,9 @@ async def main():
 
     # Initialize old SQLite database for existing functionality
     init_db()
-
+    database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://bankrot:bankrot_password@localhost:5432/bankrot")
+    # Если есть engine = ... → engine = create_async_engine(database_url)
+ 
     # Initialize new PostgreSQL database for cases module
     await init_pg_db()
     logger.info("PostgreSQL database initialized")
