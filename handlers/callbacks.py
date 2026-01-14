@@ -1,11 +1,189 @@
 """
-CASE callbacks - Phase 8
+CASE callbacks - Phase 8 & 9 (COMPLETE)
 Migrated from bot.py to modular handlers.
 """
 
 # ============================================================================
-# CASE CALLBACKS - PHASE 8 (5 callbacks)
+# CASE CALLBACKS - COMPLETE (9 callbacks total)
 # ============================================================================
+
+# Lines 2072-2166 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 2)
+async def case_edit_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    await state.clear()
+
+
+
+
+    # --- EDIT MENU SHELL (no docs, no CaseCardFill) ---
+
+    row = get_case(uid, case_id)
+
+    if not row:
+
+        await call.message.answer("Дело не найдено.")
+
+        await call.answer()
+
+        return
+
+
+
+    try:
+
+        case_number = row[2] if len(row) > 2 else ""
+
+        stage = row[3] if len(row) > 3 else ""
+
+        court = row[5] if len(row) > 5 else ""
+
+        judge = row[6] if len(row) > 6 else ""
+
+        fin_manager = row[7] if len(row) > 7 else ""
+
+        notes = row[8] if len(row) > 8 else ""
+
+    except (IndexError, TypeError) as e:
+        logger.warning(f"Failed to parse case row: {e}")
+        case_number = stage = court = judge = fin_manager = notes = ""
+
+
+
+    text = (
+
+        f"✏️ Редактирование карточки дела #{case_id}\n\n"
+
+        f"Номер дела: {case_number or '—'}\n"
+
+        f"Суд: {court or '—'}\n"
+
+        f"Судья: {judge or '—'}\n"
+
+        f"ФУ: {fin_manager or '—'}\n"
+
+        f"Стадия: {stage or '—'}\n"
+
+        f"Заметки: {notes or '—'}"
+
+    )
+
+
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="📋 Показать карточку дела", callback_data=f"case:card:{case_id}")
+
+    kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{case_id}:case_number")
+
+    kb.button(text="✏️ Суд", callback_data=f"case:edit:{case_id}:court")
+
+    kb.button(text="✏️ Судья", callback_data=f"case:edit:{case_id}:judge")
+
+    kb.button(text="✏️ ФУ", callback_data=f"case:edit:{case_id}:fin_manager")
+
+    kb.button(text="✏️ Стадия", callback_data=f"case:edit:{case_id}:stage")
+
+    kb.button(text="🗒 Заметки", callback_data=f"case:edit:{case_id}:notes")
+
+    kb.button(text="🔙 Назад к делу", callback_data=f"case:open:{case_id}")
+
+    kb.adjust(1, 2, 2, 2, 1)
+
+
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+
+    await call.answer()
+
+    return
+
+    # --- /EDIT MENU SHELL ---
+
+
+    card = get_case_card(uid, case_id) or {}
+
+
+# Lines 2347-2373 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":", maxsplit=3)
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    cid_str, filename = parts[2], parts[3]
+
+    if any(bad in filename for bad in ("/", "\\", "..")):
+        await call.message.answer("Некорректное имя файла")
+        await call.answer()
+        return
+
+    path = GENERATED_DIR / "cases" / cid_str / filename
+    if not path.is_file():
+        await call.message.answer("Файл не найден...")
+        await call.answer()
+        return
+
+    await call.message.answer_document(FSInputFile(path))
+    await call.answer()
+
+
+# Lines 2694-2735 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("case:open:"))
+async def case_open(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    (cid, _owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
+
+    text = (
+        f"📌 Дело #{cid}\n"
+        f"Код: {code_name}\n"
+        f"Номер: {case_number or '-'}\n"
+        f"Суд: {court or '-'}\n"
+        f"Судья: {judge or '-'}\n"
+        f"ФУ: {fin_manager or '-'}\n"
+        f"Стадия: {stage or '-'}\n"
+        f"Заметки: {notes or '-'}\n"
+        f"Создано: {created_at}\n"
+        f"Обновлено: {updated_at}"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📁 Карточка дела", callback_data=f"case:card:{cid}")
+    kb.button(text="✏️ Номер дела", callback_data=f"case:edit:{cid}:case_number")
+    kb.button(text="✏️ Суд", callback_data=f"case:edit:{cid}:court")
+    kb.button(text="✏️ Судья", callback_data=f"case:edit:{cid}:judge")
+    kb.button(text="✏️ ФУ", callback_data=f"case:edit:{cid}:fin_manager")
+    kb.button(text="✏️ Стадия", callback_data=f"case:edit:{cid}:stage")
+    kb.button(text="🗒 Заметки", callback_data=f"case:edit:{cid}:notes")
+    kb.button(text="🔙 К списку дел", callback_data="case:list")
+    kb.adjust(1, 2, 2, 2)
+
+    await call.message.answer(text, reply_markup=kb.as_markup())
+    await call.answer()
+
 
 # Lines 2738-2773 from bot.py
 @dp.callback_query(lambda c: c.data.startswith("case:card:"))
@@ -43,6 +221,21 @@ async def case_card_open(call: CallbackQuery, state: FSMContext):
     kb.adjust(1)
 
     await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+# Lines 3037-3048 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+async def case_card_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+    await send_card_fill_menu(call.message, uid, cid)
     await call.answer()
 
 
