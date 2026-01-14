@@ -1472,10 +1472,10 @@ async def cmd_start(message: Message):
     cancel_flow(uid)
 
     await message.answer(
-        "Бот запущен. Нажмите «Старт», чтобы открыть меню.",
+        "Добро пожаловать! Выберите раздел из меню ниже:",
         reply_markup=main_menu_kb(),
     )
-    await message.answer("▶️ Запуск:", reply_markup=start_ikb())
+    await message.answer("Главное меню:", reply_markup=home_ikb())
 
 
 @dp.callback_query(F.data == "menu:home")
