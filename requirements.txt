@@ -30,3 +30,7 @@ logging>=0.4.9.6
 # Web API (bankrot_web)
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
+docxtpl
+jinja2
+python-docx
+docxtpl==0.17.1
