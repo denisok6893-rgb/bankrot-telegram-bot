@@ -63,6 +63,7 @@ from bankrot_bot.config import load_settings
 # Database and handlers
 from bankrot_bot.database import init_db as init_pg_db
 from bankrot_bot.handlers import cases as cases_handlers
+from handlers import probability as probability_handlers
 
 from bankrot_bot.keyboards.menus import (
     main_menu_kb,
@@ -1342,6 +1343,8 @@ dp = Dispatcher(storage=storage)
 
 # Register cases router
 dp.include_router(cases_handlers.router)
+# Register probability router (Phase 9)
+dp.include_router(probability_handlers.router)
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}

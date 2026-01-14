@@ -63,6 +63,7 @@ def case_card_ikb(case_id: int) -> InlineKeyboardMarkup:
     kb.button(text="✏️ Редактирование карточки", callback_data=f"case:edit:{case_id}")
     kb.button(text="💬 Помощь по делу (ИИ)", callback_data=f"case:help:{case_id}")
     kb.button(text="⚖️ Судебные акты по делу", callback_data=f"case:rulings:{case_id}")
+    kb.button(text="🎲 Вероятность банкротства", callback_data=f"bankruptcy_probability:{case_id}")
     kb.button(text="🔙 Назад", callback_data="profile:cases")
     kb.adjust(1)
     return kb.as_markup()
