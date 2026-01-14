@@ -1,13 +1,14 @@
 """
-Callback Handlers - Phase 8, 9, 10, 11, 12
+Callback Handlers - Phase 8, 9, 10, 11, 12, 13
 Migrated from bot.py to modular handlers.
 
 Phase 8-9: CASE callbacks (9 handlers) ✅
 Phase 10: PROFILE & AI/MISC callbacks (5 handlers) ✅
 Phase 11: NAVIGATION & DOCS callbacks (5 handlers) ✅
 Phase 12: DOCS/FSM callbacks (6 handlers) ✅
+Phase 13: CREDITORS/FSM + MENU callbacks (6 handlers) ✅
 
-Total: 25 callbacks migrated (~43% of ~58 total)
+Total: 31 callbacks migrated (53% of ~58 total) 🎉 50% MILESTONE!
 """
 
 # ============================================================================
@@ -817,3 +818,101 @@ async def creditors_delete_one(call: CallbackQuery, state: FSMContext):
     await call.message.answer(f"✅ Удалено: {name}")
     # вернём меню кредиторов
     await creditors_menu(call, state)
+
+
+# Lines 3399-3412 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("creditors:text_clear:"))
+async def creditors_text_clear(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    card = get_case_card(uid, cid) or {}
+    card["creditors_text"] = None
+    upsert_case_card(uid, cid, card)
+
+    await call.message.answer("✅ creditors_text очищен.")
+    await creditors_menu(call, state)
+
+
+# Lines 3415-3432 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("creditors:text:"))
+async def creditors_text_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    await state.clear()
+    await state.update_data(card_case_id=cid)
+    await state.set_state(CreditorsFill.creditors_text)
+
+    await call.message.answer(
+        "Вставь текст кредиторов одним блоком.\n"
+        "Он будет иметь приоритет над списком creditors при генерации.\n"
+        "Отправь '-' чтобы очистить."
+    )
+    await call.answer()
+
+
+# ============================================================================
+# MENU CALLBACKS (menu:home, menu:profile, menu:docs, menu:help)
+# Phase 13
+# ============================================================================
+
+# Lines 1472-1479 from bot.py
+@dp.callback_query(F.data == "menu:home")
+async def menu_home(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("Главное меню:", reply_markup=home_ikb())
+    await call.answer()
+
+
+# Lines 1482-1489 from bot.py
+@dp.callback_query(F.data == "menu:profile")
+async def menu_profile(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer("👤 Мой профиль:", reply_markup=profile_ikb())
+    await call.answer()
+
+
+# Lines 1492-1505 from bot.py
+@dp.callback_query(F.data == "menu:docs")
+async def menu_docs(call: CallbackQuery):
+    """Публичный каталог документов - доступен всем."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "📄 Публичный каталог документов\n\n"
+        "Здесь вы найдете шаблоны и образцы документов для банкротства.\n"
+        "Выберите категорию:",
+        reply_markup=docs_catalog_ikb()
+    )
+    await call.answer()
+
+
+# Lines 1508-1520 from bot.py
+@dp.callback_query(F.data == "menu:help")
+async def menu_help(call: CallbackQuery):
+    """Подменю раздела Помощь."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    await call.message.answer(
+        "❓ Раздел помощи\n\n"
+        "Выберите интересующую тему:",
+        reply_markup=help_ikb(),
+    )
+    await call.answer()
