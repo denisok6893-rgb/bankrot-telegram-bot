@@ -1,5 +1,5 @@
 """
-Callback Handlers - Phase 8, 9, 10, 11, 12, 13, 14
+Callback Handlers - Phase 8, 9, 10, 11, 12, 13, 14, 15
 Migrated from bot.py to modular handlers.
 
 Phase 8-9: CASE callbacks (9 handlers) ✅
@@ -8,8 +8,9 @@ Phase 11: NAVIGATION & DOCS callbacks (5 handlers) ✅
 Phase 12: DOCS/FSM callbacks (6 handlers) ✅
 Phase 13: CREDITORS/FSM + MENU callbacks (6 handlers) ✅
 Phase 14: PARTY/ASSET callbacks (6 handlers) ✅
+Phase 15: ASSET/DOC/ARCHIVE callbacks (5 handlers) ✅
 
-Total: 37 callbacks migrated (64% of ~58 total) 🎉 60% MILESTONE!
+Total: 42 callbacks migrated (72% of ~58 total) 🎉 70% MILESTONE!
 """
 
 # ============================================================================
@@ -1085,4 +1086,205 @@ async def view_asset(call: CallbackQuery):
             text += f"Примечания: {asset.notes}\n"
 
         await call.message.answer(text, reply_markup=asset_view_ikb(asset_id, asset.case_id))
+    await call.answer()
+
+
+# Lines 4095-4116 from bot.py
+@dp.callback_query(F.data.startswith("asset:delete:"))
+async def delete_asset(call: CallbackQuery):
+    """Удалить имущество."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    asset_id = int(parts[2])
+    case_id = int(parts[3])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        success = await delete_case_asset(session, asset_id, case_id)
+        await session.commit()
+
+        if success:
+            await call.message.answer("✅ Запись удалена")
+        else:
+            await call.answer("Ошибка удаления", show_alert=True)
+    await call.answer()
+
+
+# ============================================================================
+# ASSET/DOC/ARCHIVE CALLBACKS (asset:delete, party/asset:generate_doc, case:archive, case:fileidx)
+# Phase 15
+# ============================================================================
+
+# Lines 4121-4149 from bot.py
+@dp.callback_query(F.data.startswith("party:generate_doc:"))
+async def generate_creditors_doc(call: CallbackQuery):
+    """Генерация списка кредиторов и должников в DOCX."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    case_id = int(parts[2])
+
+    await call.answer("Генерирую документ...")
+
+    try:
+        # Генерация DOCX из шаблона
+        doc_bytes = await render_creditors_list(case_id)
+
+        # Создание файла для отправки
+        filename = f"creditors_list_case_{case_id}.docx"
+        input_file = BufferedInputFile(doc_bytes, filename=filename)
+
+        # Отправка документа пользователю
+        await call.message.answer_document(
+            input_file,
+            caption="📄 Список кредиторов и должников"
+        )
+    except Exception as e:
+        logger.error(f"Error generating creditors list: {e}", exc_info=True)
+        await call.message.answer("❌ Ошибка при генерации документа. Проверьте, что вы заполнили профиль должника.")
+
+
+# Lines 4152-4180 from bot.py
+@dp.callback_query(F.data.startswith("asset:generate_doc:"))
+async def generate_inventory_doc(call: CallbackQuery):
+    """Генерация описи имущества в DOCX."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    case_id = int(parts[2])
+
+    await call.answer("Генерирую документ...")
+
+    try:
+        # Генерация DOCX из шаблона
+        doc_bytes = await render_inventory(case_id)
+
+        # Создание файла для отправки
+        filename = f"inventory_case_{case_id}.docx"
+        input_file = BufferedInputFile(doc_bytes, filename=filename)
+
+        # Отправка документа пользователю
+        await call.message.answer_document(
+            input_file,
+            caption="📄 Опись имущества гражданина"
+        )
+    except Exception as e:
+        logger.error(f"Error generating inventory: {e}", exc_info=True)
+        await call.message.answer("❌ Ошибка при генерации документа. Проверьте, что вы заполнили профиль должника.")
+
+
+# Lines 1860-1918 from bot.py
+@dp.callback_query(F.data.startswith("case:archive:"))
+async def case_archive(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    try:
+        page = int(parts[3])
+    except ValueError:
+        page = 1
+    if page < 1:
+        page = 1
+
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    files_all = []
+    if case_dir.is_dir():
+        files_all = sorted(
+            [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+            reverse=True,
+        )
+
+    archive_files = files_all[1:] if len(files_all) > 1 else []
+    per_page = 10
+    total = len(archive_files)
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    chunk = archive_files[start:end]
+
+    kb = InlineKeyboardBuilder()
+    if not chunk:
+        kb.button(text="(архив пуст)", callback_data="noop")
+    else:
+        for i, name in enumerate(chunk, start=start):
+            kb.button(text=f"📎 {name}", callback_data=f"case:fileidx:{case_id}:{i}")
+
+    if page > 1:
+        kb.button(text="⬅️ Назад", callback_data=f"case:archive:{case_id}:{page-1}")
+    if page < max_page:
+        kb.button(text="➡️ Далее", callback_data=f"case:archive:{case_id}:{page+1}")
+
+    kb.button(text="🔙 Назад к документам", callback_data=f"case:docs:{case_id}")
+    kb.adjust(1)
+
+    await call.message.answer(
+        f"📚 Архив документов по делу #{case_id} (стр. {page}/{max_page})",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+# Lines 1921-1962 from bot.py
+@dp.callback_query(F.data.startswith("case:fileidx:"))
+async def case_file_send_by_index(call: CallbackQuery):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    if len(parts) < 4:
+        await call.answer()
+        return
+
+    case_id = int(parts[2])
+    try:
+        idx = int(parts[3])
+    except ValueError:
+        await call.answer()
+        return
+
+    case_dir = GENERATED_DIR / "cases" / str(case_id)
+    files_all = []
+    if case_dir.is_dir():
+        files_all = sorted(
+            [p.name for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"],
+            reverse=True,
+        )
+
+    archive_files = files_all[1:] if len(files_all) > 1 else []
+    if idx < 0 or idx >= len(archive_files):
+        await call.message.answer("Файл не найден (возможно, архив изменился). Открой архив заново.")
+        await call.answer()
+        return
+
+    filename = archive_files[idx]
+    path = case_dir / filename
+    if not path.is_file():
+        await call.message.answer("Файл не найден (возможно, удалён).")
+        await call.answer()
+        return
+
+    await call.message.answer_document(FSInputFile(path))
     await call.answer()
