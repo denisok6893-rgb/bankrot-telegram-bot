@@ -1,12 +1,13 @@
 """
-Callback Handlers - Phase 8, 9, 10, 11
+Callback Handlers - Phase 8, 9, 10, 11, 12
 Migrated from bot.py to modular handlers.
 
 Phase 8-9: CASE callbacks (9 handlers) ✅
 Phase 10: PROFILE & AI/MISC callbacks (5 handlers) ✅
 Phase 11: NAVIGATION & DOCS callbacks (5 handlers) ✅
+Phase 12: DOCS/FSM callbacks (6 handlers) ✅
 
-Total: 19 callbacks migrated (~33% of ~58 total)
+Total: 25 callbacks migrated (~43% of ~58 total)
 """
 
 # ============================================================================
@@ -611,3 +612,208 @@ async def docs_choose_case(call: CallbackQuery):
 
     await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
+
+
+# ============================================================================
+# DOCS/FSM CALLBACKS (docs:case:*, docs:petition:*, card:fill:*, creditors:*)
+# Phase 12
+# ============================================================================
+
+# Lines 2269-2288 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("docs:case:"))
+async def docs_case_selected(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    cid = int(call.data.split(":")[2])
+    row = get_case(uid, cid)
+    if not row:
+        await call.message.answer("Дело не найдено.")
+        await call.answer()
+        return
+
+    await state.update_data(docs_case_id=cid)
+    await call.message.answer(
+        f"✅ Выбрано дело #{cid}. Теперь выбери документ 👇",
+        reply_markup=docs_menu_ikb(cid),
+    )
+    await call.answer()
+
+
+# Lines 2290-2345 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("docs:petition:"))
+async def docs_petition(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":", 2)
+    doc_key = parts[2] if len(parts) == 3 else ""
+
+    # Берём выбранное дело из state (мы его сохраняем в case:docs:<id>)
+    cid = await _selected_case_id(state)
+    if cid is None:
+        await call.message.answer("Сначала выбери дело…")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
+    case_row = get_case(uid, cid)
+    if not case_row:
+        await state.update_data(docs_case_id=None)
+        await call.message.answer("Дело не найдено. Выбери его заново.")
+        await docs_choose_case(call)
+        await call.answer()
+        return
+
+    card = get_case_card(uid, cid)
+    if not card:
+        await call.message.answer(
+            "Карточка дела ещё не заполнена.\n"
+            "Добавь данные дела (пол, паспорт, долги и т.д.)."
+        )
+        await call.answer()
+        return
+
+    validation = validate_case_card(card)
+    missing = validation.get("missing", [])
+    if missing:
+        await call.message.answer(
+            "Не хватает обязательных данных в карточке дела:\n"
+            + "\n".join(f"- {m}" for m in missing)
+        )
+        await call.answer()
+        return
+
+    if doc_key != "bankruptcy_petition":
+        await call.message.answer("Документ не найден")
+        await call.answer()
+        return
+
+    path = await build_bankruptcy_petition_doc(case_row, card)
+    await call.message.answer_document(
+        FSInputFile(path),
+        caption=f"Готово ✅ Заявление о банкротстве для дела #{cid}",
+    )
+    await call.answer()
+
+
+# Lines 3086-3125 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("card:fill:"))
+async def card_fill_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str = call.data.split(":", maxsplit=2)
+    cid = int(cid_str)
+
+    await state.clear()
+
+    # Берём текущую карточку и находим первое незаполненное поле
+    card = get_case_card(uid, cid) or {}
+    next_field = None
+    for key, _meta in CASE_CARD_FIELDS:
+        val = card.get(key)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            next_field = key
+            break
+
+    # Если всё заполнено — просто покажем меню карточки
+    if not next_field:
+        await state.update_data(card_case_id=cid)
+        await send_card_fill_menu(call.message, uid, cid)
+        await call.answer()
+        return
+
+    # Иначе — сразу стартуем ввод первого незаполненного поля
+    await state.update_data(card_case_id=cid, card_field_key=next_field)
+    await state.set_state(CaseCardFill.waiting_value)
+
+    filled, total = _card_completion_status(card)
+    prompt = CASE_CARD_FIELD_META[next_field]["prompt"] + "\nОтправь '-' чтобы оставить пустым."
+    await call.message.answer(
+        f"✍️ Заполняем карточку дела #{cid}. Заполнено {filled}/{total}.\n"
+        f"Сейчас: {CASE_CARD_FIELD_META[next_field]['title']}.\n"
+        f"{prompt}"
+    )
+    await call.answer()
+
+
+# Lines 3327-3339 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("creditors:add:"))
+async def creditors_add_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    await state.clear()
+    await state.update_data(card_case_id=cid, creditor_tmp={})
+    await state.set_state(CreditorsFill.name)
+    await call.message.answer("Введи название кредитора (обязательно).")
+    await call.answer()
+
+
+# Lines 3342-3366 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("creditors:del:"))
+async def creditors_delete_menu(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+    cid = int(call.data.split(":")[2])
+
+    card = get_case_card(uid, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list) or not creditors:
+        await call.message.answer("Список кредиторов пуст.")
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = [f"🗑 Удаление кредитора (дело #{cid})", "Выбери номер:"]
+    for i, c in enumerate(creditors, 1):
+        lines.append(_format_creditor_line(i, c))
+        kb.button(text=f"Удалить #{i}", callback_data=f"creditors:delone:{cid}:{i}")
+    kb.button(text="🔙 Назад", callback_data=f"case:creditors:{cid}")
+    kb.adjust(1)
+
+    await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+# Lines 3369-3396 from bot.py
+@dp.callback_query(lambda c: c.data.startswith("creditors:delone:"))
+async def creditors_delete_one(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    _, _, cid_str, idx_str = call.data.split(":")
+    cid = int(cid_str)
+    idx = int(idx_str)
+
+    card = get_case_card(uid, cid) or {}
+    creditors = card.get("creditors")
+    if not isinstance(creditors, list):
+        creditors = []
+    if idx < 1 or idx > len(creditors):
+        await call.message.answer("Некорректный номер.")
+        await call.answer()
+        return
+
+    removed = creditors.pop(idx - 1)
+    card["creditors"] = creditors
+    upsert_case_card(uid, cid, card)
+
+    name = (removed.get("name") or "—").strip()
+    await call.message.answer(f"✅ Удалено: {name}")
+    # вернём меню кредиторов
+    await creditors_menu(call, state)
