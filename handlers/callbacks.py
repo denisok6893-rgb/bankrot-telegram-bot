@@ -1,5 +1,5 @@
 """
-Callback Handlers - Phase 8, 9, 10, 11, 12, 13
+Callback Handlers - Phase 8, 9, 10, 11, 12, 13, 14
 Migrated from bot.py to modular handlers.
 
 Phase 8-9: CASE callbacks (9 handlers) ✅
@@ -7,8 +7,9 @@ Phase 10: PROFILE & AI/MISC callbacks (5 handlers) ✅
 Phase 11: NAVIGATION & DOCS callbacks (5 handlers) ✅
 Phase 12: DOCS/FSM callbacks (6 handlers) ✅
 Phase 13: CREDITORS/FSM + MENU callbacks (6 handlers) ✅
+Phase 14: PARTY/ASSET callbacks (6 handlers) ✅
 
-Total: 31 callbacks migrated (53% of ~58 total) 🎉 50% MILESTONE!
+Total: 37 callbacks migrated (64% of ~58 total) 🎉 60% MILESTONE!
 """
 
 # ============================================================================
@@ -915,4 +916,173 @@ async def menu_help(call: CallbackQuery):
         "Выберите интересующую тему:",
         reply_markup=help_ikb(),
     )
+    await call.answer()
+
+
+# ============================================================================
+# PARTY/ASSET CALLBACKS (party:*, asset:*, case:assets:*)
+# Phase 14
+# ============================================================================
+
+# Lines 3935-3952 from bot.py
+@dp.callback_query(F.data.startswith("party:add_creditor:") | F.data.startswith("party:add_debtor:"))
+async def start_add_party(call: CallbackQuery, state: FSMContext):
+    """Начать добавление кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    role = "creditor" if "creditor" in call.data else "debtor"
+    case_id = int(parts[-1])
+
+    await state.update_data(case_id=case_id, role=role)
+    await state.set_state(AddParty.name)
+
+    role_text = "кредитора" if role == "creditor" else "должника"
+    await call.message.answer(f"Добавление {role_text}\n\nВведите наименование/ФИО:")
+    await call.answer()
+
+
+# Lines 3955-3988 from bot.py
+@dp.callback_query(F.data.startswith("party:view:"))
+async def view_party(call: CallbackQuery):
+    """Просмотр кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    party_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    from bankrot_bot.models.case_party import CaseParty
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(CaseParty).where(CaseParty.id == party_id)
+        result = await session.execute(stmt)
+        party = result.scalar_one_or_none()
+
+        if not party:
+            await call.answer("Запись не найдена", show_alert=True)
+            return
+
+        role_text = "Кредитор" if party.role == "creditor" else "Должник"
+        text = f"{role_text}\n\n"
+        text += f"Наименование: {party.name}\n"
+        text += f"Сумма: {float(party.amount):.2f} {party.currency}\n"
+        if party.basis:
+            text += f"Основание: {party.basis}\n"
+        if party.notes:
+            text += f"Примечания: {party.notes}\n"
+
+        await call.message.answer(text, reply_markup=party_view_ikb(party_id, party.case_id))
+    await call.answer()
+
+
+# Lines 3991-4012 from bot.py
+@dp.callback_query(F.data.startswith("party:delete:"))
+async def delete_party(call: CallbackQuery):
+    """Удалить кредитора/должника."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    parts = call.data.split(":")
+    party_id = int(parts[2])
+    case_id = int(parts[3])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        success = await delete_case_party(session, party_id, case_id)
+        await session.commit()
+
+        if success:
+            await call.message.answer("✅ Запись удалена")
+        else:
+            await call.answer("Ошибка удаления", show_alert=True)
+    await call.answer()
+
+
+# Lines 4017-4040 from bot.py
+@dp.callback_query(F.data.startswith("case:assets:"))
+async def show_case_assets(call: CallbackQuery):
+    """Показать опись имущества по делу."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    async with get_session() as session:
+        assets = await get_case_assets(session, case_id)
+        total = calculate_assets_total(assets)
+
+        text = f"🏠 Опись имущества по делу #{case_id}\n\n"
+        text += f"Записей: {len(assets)}\n"
+        text += f"Общая стоимость: {float(total):.2f} ₽"
+
+        await call.message.answer(
+            text,
+            reply_markup=case_assets_ikb(case_id, assets, float(total))
+        )
+    await call.answer()
+
+
+# Lines 4043-4056 from bot.py
+@dp.callback_query(F.data.startswith("asset:add:"))
+async def start_add_asset(call: CallbackQuery, state: FSMContext):
+    """Начать добавление имущества."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    case_id = int(call.data.split(":")[-1])
+    await state.update_data(case_id=case_id)
+    await state.set_state(AddAsset.kind)
+
+    await call.message.answer("Добавление имущества\n\nВведите вид имущества (например: квартира, автомобиль, акции):")
+    await call.answer()
+
+
+# Lines 4059-4092 from bot.py
+@dp.callback_query(F.data.startswith("asset:view:"))
+async def view_asset(call: CallbackQuery):
+    """Просмотр имущества."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer()
+        return
+
+    asset_id = int(call.data.split(":")[-1])
+
+    from bankrot_bot.database import get_session
+    from bankrot_bot.models.case_asset import CaseAsset
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(CaseAsset).where(CaseAsset.id == asset_id)
+        result = await session.execute(stmt)
+        asset = result.scalar_one_or_none()
+
+        if not asset:
+            await call.answer("Запись не найдена", show_alert=True)
+            return
+
+        text = f"🏠 {asset.kind}\n\n"
+        text += f"Описание: {asset.description}\n"
+        if asset.qty_or_area:
+            text += f"Количество/площадь: {asset.qty_or_area}\n"
+        if asset.value:
+            text += f"Стоимость: {float(asset.value):.2f} ₽\n"
+        if asset.notes:
+            text += f"Примечания: {asset.notes}\n"
+
+        await call.message.answer(text, reply_markup=asset_view_ikb(asset_id, asset.case_id))
     await call.answer()
