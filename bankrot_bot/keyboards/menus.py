@@ -7,6 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="➕ Новое дело")],
             [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="📄 Документы")],
             [KeyboardButton(text="❓ Помощь")],
         ],

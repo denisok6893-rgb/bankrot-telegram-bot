@@ -64,6 +64,7 @@ from bankrot_bot.config import load_settings
 from bankrot_bot.database import init_db as init_pg_db
 from bankrot_bot.handlers import cases as cases_handlers
 #from handlers import probability as probability_handlers
+from handlers import newcase_fsm
 
 from bankrot_bot.keyboards.menus import (
     main_menu_kb,
@@ -1345,6 +1346,8 @@ dp = Dispatcher(storage=storage)
 dp.include_router(cases_handlers.router)
 # Register probability router (Phase 9)
 # dp.include_router(probability_handlers.router)
+# Register new case FSM router (Phase 12 fix)
+dp.include_router(newcase_fsm.router)
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
