@@ -383,5 +383,8 @@ def register_callbacks(dp):
     Usage in bot.py:
         from handlers.callbacks import register_callbacks
         register_callbacks(dp)
+
+    NOTE: Router registration removed to prevent "Router is already attached" error.
+    Routers are now registered directly in bot.py.
     """
-    dp.include_router(callback_router)
+    pass
