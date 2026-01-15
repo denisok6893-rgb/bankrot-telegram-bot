@@ -22,12 +22,12 @@ from bankrot_bot.keyboards.menus import (
     my_cases_ikb,
 )
 
-# Import helper functions from bot.py
-# NOTE: These should eventually be moved to utils module
+# Import helper functions (circular import fix)
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from bot import is_allowed, list_cases
+from bankrot_bot.shared import is_allowed  # ✓ Breaks circular import
+from bot import list_cases  # TODO: Move to database module
 
 
 # Create router for callback handlers

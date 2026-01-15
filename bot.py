@@ -928,16 +928,30 @@ def _parse_ids(s: str) -> set[int]:
 ALLOWED_USERS = _parse_ids(RAW_ALLOWED)
 ADMIN_USERS = _parse_ids(RAW_ADMINS)
 
+# Import authorization functions from shared module to break circular imports
+from bankrot_bot.shared import is_allowed, is_admin, init_allowed_users
 
-def is_allowed(uid: int) -> bool:
-    return (not ALLOWED_USERS) or (uid in ALLOWED_USERS) or (uid in ADMIN_USERS)
-
-
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_USERS
+# Whitelist of allowed columns for case_cards table (SQL injection prevention)
+CASE_CARDS_ALLOWED_COLUMNS = frozenset([
+    "data", "court_address", "judge_name", "debtor_full_name"
+])
 
 
 def migrate_case_cards_table(con: sqlite3.Connection | None = None) -> set[str]:
+    """
+    Safely migrate case_cards table schema.
+
+    Adds missing columns from CASE_CARDS_ALLOWED_COLUMNS whitelist.
+
+    Args:
+        con: Optional database connection (creates new if None)
+
+    Returns:
+        Set of current column names after migration
+
+    Security:
+        Column names validated against whitelist to prevent SQL injection
+    """
     close_con = con is None
     if con is None:
         con = sqlite3.connect(DB_PATH)
@@ -946,12 +960,21 @@ def migrate_case_cards_table(con: sqlite3.Connection | None = None) -> set[str]:
     cur.execute("PRAGMA table_info(case_cards)")
     cols = {row[1] for row in cur.fetchall()}
 
-    for col in ("data", "court_address", "judge_name", "debtor_full_name"):
+    # Add missing columns (WHITELIST validation)
+    for col in CASE_CARDS_ALLOWED_COLUMNS:
         if col not in cols:
+            # Safe: col is from trusted whitelist, not user input
+            # SQLite doesn't support parameterized ALTER TABLE
+            if not col.isidentifier():  # Extra safety check
+                logger.error(f"Invalid column name rejected: {col}")
+                raise ValueError(f"Invalid column name: {col}")
+
             cur.execute(f"ALTER TABLE case_cards ADD COLUMN {col} TEXT")
+            logger.info(f"Added column {col} to case_cards table")
 
     con.commit()
 
+    # Return updated column list
     cur.execute("PRAGMA table_info(case_cards)")
     result = {row[1] for row in cur.fetchall()}
 
@@ -1357,13 +1380,7 @@ def cancel_flow(uid: int) -> None:
     USER_FLOW.pop(uid, None)
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
-    """Главная клавиатура выбора типа документа."""
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📝 Ходатайство", callback_data="flow:motion")
-    kb.button(text="🤝 Мировое соглашение", callback_data="flow:settlement")
-    kb.adjust(1)
-    return kb.as_markup()
+# main_keyboard() definition removed - see line 4336 for active implementation
 
 
 def export_keyboard() -> InlineKeyboardMarkup:
@@ -1465,9 +1482,18 @@ def build_settlement_user_text(ans: Dict[str, str]) -> str:
 # =========================
 
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message) -> None:
+    """
+    Handle /start command.
+
+    Shows welcome message with main menu to authorized users.
+
+    Args:
+        message: Incoming /start command message
+    """
     uid = message.from_user.id
     if not is_allowed(uid):
+        logger.warning(f"Unauthorized /start attempt by user {uid}")
         return
     cancel_flow(uid)
 
@@ -1479,7 +1505,13 @@ async def cmd_start(message: Message):
 
 
 @dp.callback_query(F.data == "menu:home")
-async def menu_home(call: CallbackQuery):
+async def menu_home(call: CallbackQuery) -> None:
+    """
+    Navigate to home/main menu.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1489,7 +1521,13 @@ async def menu_home(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:profile")
-async def menu_profile(call: CallbackQuery):
+async def menu_profile(call: CallbackQuery) -> None:
+    """
+    Navigate to user profile menu.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1499,8 +1537,15 @@ async def menu_profile(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:docs")
-async def menu_docs(call: CallbackQuery):
-    """Публичный каталог документов - доступен всем."""
+async def menu_docs(call: CallbackQuery) -> None:
+    """
+    Navigate to public documents catalog.
+
+    Публичный каталог документов - доступен всем авторизованным пользователям.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1515,8 +1560,15 @@ async def menu_docs(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:help")
-async def menu_help(call: CallbackQuery):
-    """Подменю раздела Помощь."""
+async def menu_help(call: CallbackQuery) -> None:
+    """
+    Navigate to help section.
+
+    Подменю раздела Помощь.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1771,19 +1823,7 @@ async def profile_cases(call: CallbackQuery):
     await call.answer()
 
 
-@dp.callback_query(F.data.startswith("case:open:"))
-async def case_open(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    case_id = int(call.data.split(":")[-1])
-    await call.message.answer(
-        f"🗂 Карточка дела #{case_id}\nВыберите действие:",
-        reply_markup=case_card_ikb(case_id),
-    )
-    await call.answer()
+# case_open() DUPLICATE REMOVED - see line ~2700 for active implementation
 
 @dp.callback_query(F.data.startswith("case:docs:"))
 async def case_docs(call: CallbackQuery, state: FSMContext):
@@ -1970,40 +2010,7 @@ async def case_file_send_by_index(call: CallbackQuery):
     await call.message.answer_document(FSInputFile(path))
     await call.answer()
 
-@dp.callback_query(F.data.startswith("case:file:"))
-async def case_file_send(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    # формат: case:file:<case_id>:<filename>
-    parts = call.data.split(":", 3)
-    if len(parts) != 4:
-        await call.answer("Некорректная команда")
-        return
-
-    case_id = int(parts[2])
-    filename = parts[3]
-
-    if ("/" in filename) or ("\\" in filename) or (".." in filename):
-        await call.message.answer("Некорректное имя файла.")
-        await call.answer()
-        return
-
-    case_dir = GENERATED_DIR / "cases" / str(case_id)
-    path = case_dir / filename
-
-    if not path.exists():
-        await call.message.answer("Файл не найден (возможно, удалён).")
-        await call.answer()
-        return
-
-    await call.message.answer_document(
-        FSInputFile(path),
-        caption=f"📄 Документ по делу #{case_id}",
-    )
-    await call.answer()
+# case_file_send() DUPLICATE REMOVED - see line ~2350 for active implementation
 
 @dp.callback_query(F.data == "noop")
 async def noop(call: CallbackQuery):
@@ -2353,8 +2360,18 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("case:file:"))
-async def case_file_send(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery) -> None:
+    """
+    Send a document file from case directory to user.
+
+    Callback format: case:file:<case_id>:<filename>
+
+    Args:
+        call: Telegram callback query with file request
+
+    Security: Validates filename to prevent directory traversal attacks
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -2362,24 +2379,33 @@ async def case_file_send(call: CallbackQuery):
 
     parts = call.data.split(":", maxsplit=3)
     if len(parts) < 4:
-        await call.answer()
+        logger.warning(f"Invalid case:file callback format: {call.data}")
+        await call.answer("Некорректный формат команды")
         return
 
     cid_str, filename = parts[2], parts[3]
 
+    # Security: Prevent directory traversal attacks
     if any(bad in filename for bad in ("/", "\\", "..")):
+        logger.warning(f"Directory traversal attempt by user {uid}: {filename}")
         await call.message.answer("Некорректное имя файла")
         await call.answer()
         return
 
     path = GENERATED_DIR / "cases" / cid_str / filename
     if not path.is_file():
-        await call.message.answer("Файл не найден...")
+        logger.info(f"File not found: {path}")
+        await call.message.answer("Файл не найден")
         await call.answer()
         return
 
-    await call.message.answer_document(FSInputFile(path))
-    await call.answer()
+    try:
+        await call.message.answer_document(FSInputFile(path))
+        await call.answer()
+    except Exception as e:
+        logger.error(f"Failed to send file {path}: {e}")
+        await call.message.answer("Ошибка при отправке файла")
+        await call.answer()
 
 
 @dp.callback_query(lambda c: c.data == "docs:back_menu")
@@ -2700,33 +2726,50 @@ async def back_to_cases(call: CallbackQuery):
     )
     await call.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("case:open:"))
-async def case_open(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("case:open:"))
+async def case_open(call: CallbackQuery) -> None:
+    """
+    Display full case card with all details and editing options.
+
+    Callback format: case:open:<case_id>
+    Shows: code_name, case_number, court, judge, manager, stage, notes, timestamps
+
+    Args:
+        call: Callback query from cases list
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
         return
 
-    cid = int(call.data.split(":")[2])
+    try:
+        cid = int(call.data.split(":")[2])
+    except (ValueError, IndexError) as e:
+        logger.error(f"Invalid callback data format: {call.data}, error: {e}")
+        await call.answer("Ошибка формата данных")
+        return
+
     row = get_case(uid, cid)
     if not row:
-        await call.message.answer("Дело не найдено.")
+        logger.info(f"Case {cid} not found or access denied for user {uid}")
+        await call.message.answer("Дело не найдено или у вас нет доступа.")
         await call.answer()
         return
 
-    (cid, _owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
+    (cid, _owner_user_id, code_name, case_number, court, judge,
+     fin_manager, stage, notes, created_at, updated_at) = row
 
     text = (
         f"📌 Дело #{cid}\n"
-        f"Код: {code_name}\n"
-        f"Номер: {case_number or '-'}\n"
-        f"Суд: {court or '-'}\n"
-        f"Судья: {judge or '-'}\n"
-        f"ФУ: {fin_manager or '-'}\n"
-        f"Стадия: {stage or '-'}\n"
-        f"Заметки: {notes or '-'}\n"
-        f"Создано: {created_at}\n"
-        f"Обновлено: {updated_at}"
+        f"📋 Код: {code_name}\n"
+        f"📄 Номер: {case_number or '—'}\n"
+        f"🏛 Суд: {court or '—'}\n"
+        f"⚖️ Судья: {judge or '—'}\n"
+        f"👤 Фин. управляющий: {fin_manager or '—'}\n"
+        f"📊 Стадия: {stage or '—'}\n"
+        f"📝 Заметки: {notes or '—'}\n"
+        f"📅 Создано: {created_at}\n"
+        f"🔄 Обновлено: {updated_at}"
     )
 
     kb = InlineKeyboardBuilder()
@@ -4266,6 +4309,10 @@ async def main():
     import logging
     logger = logging.getLogger(__name__)
 
+    # Initialize authorization module FIRST (breaks circular imports)
+    init_allowed_users(ALLOWED_USERS, ADMIN_USERS)
+    logger.info(f"Authorization initialized: {len(ALLOWED_USERS)} allowed users, {len(ADMIN_USERS)} admins")
+
     # Initialize old SQLite database for existing functionality
     init_db()
     database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://bankrot:bankrot_password@localhost:5432/bankrot")
@@ -4315,7 +4362,15 @@ async def main():
         logger.info("=" * 60)
         logger.info("Bot starting in WEBHOOK mode")
         logger.info("=" * 60)
+
+        # Initialize web app with dependencies (breaks circular import)
+        from web import init_web_app
+        init_web_app(BOT_TOKEN, dp)
+        logger.info("Web app dependencies initialized")
+
         logger.info("Webhook updates handled by web.py (FastAPI)")
+        logger.info("Start FastAPI server separately: uvicorn web:app --host 0.0.0.0 --port 8000")
+
         # Keep process alive if someone runs bot.py directly by mistake
         while True:
             await asyncio.sleep(3600)
