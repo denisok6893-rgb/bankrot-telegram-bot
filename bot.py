@@ -133,42 +133,6 @@ class AddAsset(StatesGroup):
 # =========================
 
 
-def _doc_has_placeholders(doc: Document) -> bool:
-    for paragraph in doc.paragraphs:
-        if "{{" in paragraph.text and "}}" in paragraph.text:
-            return True
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    if "{{" in paragraph.text and "}}" in paragraph.text:
-                        return True
-    return False
-
-
-def _replace_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
-    def replace_in_paragraph(paragraph):
-        for run in paragraph.runs:
-            for key, value in mapping.items():
-                placeholder = f"{{{{{key}}}}}"
-                if placeholder in run.text:
-                    run.text = run.text.replace(placeholder, str(value) if value is not None else "-")
-
-    def replace_in_table(table):
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    replace_in_paragraph(paragraph)
-                for nested_table in cell.tables:
-                    replace_in_table(nested_table)
-
-    for paragraph in doc.paragraphs:
-        replace_in_paragraph(paragraph)
-
-    for table in doc.tables:
-        replace_in_table(table)
-
 def build_gender_forms(gender: str | None) -> dict:
     """
     Возвращает слова в нужном роде для плейсхолдеров шаблона:
@@ -436,42 +400,6 @@ def _old_build_attachments_list(card: dict) -> str:
     if not items:
         return ""
     return "\n".join(f"{i}) {x}" for i, x in enumerate(items, start=1))
-
-
-def _doc_has_placeholders(doc: Document, placeholders) -> bool:
-    targets = list(placeholders)
-
-    def has_in_paragraphs(paragraphs) -> bool:
-        return any(any(t in p.text for t in targets) for p in paragraphs)
-
-    if has_in_paragraphs(doc.paragraphs):
-        return True
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if has_in_paragraphs(cell.paragraphs):
-                    return True
-    return False
-
-
-def _replace_placeholders(doc: Document, context: dict) -> None:
-    def replace_text(text: str) -> str:
-        for k, v in context.items():
-            if k in text:
-                text = text.replace(k, v)
-        return text
-
-    def process_paragraphs(paragraphs):
-        for p in paragraphs:
-            if any(k in p.text for k in context.keys()):
-                p.text = replace_text(p.text)
-
-    process_paragraphs(doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                process_paragraphs(cell.paragraphs)
 
 def _set_paragraph_text_keep_style(paragraph, new_text: str) -> None:
     """
