@@ -1,5 +1,6 @@
 """Service layer for case financial data: assets and parties (creditors/debtors)."""
-from decimal import Decimal
+import logging
+from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Tuple, Optional
 
 from sqlalchemy import select
@@ -7,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bankrot_bot.models.case_asset import CaseAsset
 from bankrot_bot.models.case_party import CaseParty
+
+logger = logging.getLogger(__name__)
 
 
 # ========== CaseParty (Кредиторы/Должники) ==========
@@ -190,12 +193,30 @@ def parse_amount_input(text: str) -> Decimal:
     Парсинг пользовательского ввода суммы.
 
     Принимает: "100000", "100 000", "100 000.50", "100000,50"
-    Возвращает Decimal.
+    Возвращает Decimal (или Decimal(0) при ошибке).
+
+    Args:
+        text: User input string with amount
+
+    Returns:
+        Parsed Decimal value, or Decimal(0) on parse error
+
+    Examples:
+        >>> safe_parse_decimal("100 000,50")
+        Decimal('100000.50')
+        >>> safe_parse_decimal("invalid")
+        Decimal('0')
     """
-    text = text.strip().replace(" ", "").replace(",", ".")
+    normalized = text.strip().replace(" ", "").replace(",", ".")
     try:
-        return Decimal(text)
-    except Exception:
+        return Decimal(normalized)
+    except (InvalidOperation, ValueError) as e:
+        # Expected errors: invalid decimal format
+        logger.warning(f"Failed to parse decimal '{text}': {e}")
+        return Decimal(0)
+    except (AttributeError, TypeError) as e:
+        # Unexpected: text is not a string (programmer error)
+        logger.error(f"safe_parse_decimal called with invalid type {type(text)}: {e}")
         return Decimal(0)
 
 
@@ -207,15 +228,36 @@ def normalize_amount_to_string(text: str) -> Optional[str]:
     Возвращает нормализованную строку: "100000.00", "100000.50", "1200000.00" или None при ошибке.
 
     Эта функция безопасна для Redis FSM storage (JSON-serializable).
+
+    Args:
+        text: User input string with amount
+
+    Returns:
+        Normalized amount string with 2 decimal places, or None on error
+
+    Examples:
+        >>> normalize_amount_to_string("100 000,50")
+        '100000.50'
+        >>> normalize_amount_to_string("-500")
+        None
+        >>> normalize_amount_to_string("invalid")
+        None
     """
-    text = text.strip().replace(" ", "").replace(",", ".")
+    normalized = text.strip().replace(" ", "").replace(",", ".")
     try:
-        amount = Decimal(text)
+        amount = Decimal(normalized)
         if amount < 0:
+            logger.warning(f"Negative amount rejected: {text}")
             return None
         # Normalize to 2 decimal places as string
         return str(amount.quantize(Decimal("0.01")))
-    except Exception:
+    except (InvalidOperation, ValueError) as e:
+        # Expected errors: invalid decimal format
+        logger.warning(f"Failed to normalize amount '{text}': {e}")
+        return None
+    except (AttributeError, TypeError) as e:
+        # Unexpected: text is not a string
+        logger.error(f"normalize_amount_to_string called with invalid type {type(text)}: {e}")
         return None
 
 
@@ -227,9 +269,21 @@ def string_to_decimal(amount_str: str) -> Decimal:
         amount_str: Нормализованная строка вида "100000.00"
 
     Returns:
-        Decimal значение
+        Decimal значение, или Decimal(0) при ошибке
+
+    Examples:
+        >>> string_to_decimal("100000.50")
+        Decimal('100000.50')
+        >>> string_to_decimal("invalid")
+        Decimal('0')
     """
     try:
         return Decimal(amount_str)
-    except Exception:
+    except (InvalidOperation, ValueError) as e:
+        # Expected errors: invalid decimal string
+        logger.warning(f"Failed to convert '{amount_str}' to Decimal: {e}")
+        return Decimal(0)
+    except (AttributeError, TypeError) as e:
+        # Unexpected: amount_str is not a string
+        logger.error(f"string_to_decimal called with invalid type {type(amount_str)}: {e}")
         return Decimal(0)

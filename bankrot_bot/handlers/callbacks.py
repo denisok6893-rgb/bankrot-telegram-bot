@@ -17,20 +17,11 @@ from bankrot_bot.keyboards.menus import (
     docs_item_ikb,
     case_card_ikb,
 )
+from bankrot_bot.shared import is_allowed  # ✓ Uses shared module (breaks circular import)
 
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-
-# Import is_allowed and GENERATED_DIR from bot.py for now
-# TODO: Refactor to use proper auth middleware
-def is_allowed(uid: int) -> bool:
-    """Check if user is allowed to use the bot."""
-    # This is a temporary import from bot.py
-    # Will be refactored to use proper auth middleware
-    from bot import is_allowed as bot_is_allowed
-    return bot_is_allowed(uid)
 
 
 def get_generated_dir() -> Path:
