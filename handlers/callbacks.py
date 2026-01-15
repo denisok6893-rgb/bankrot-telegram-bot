@@ -27,7 +27,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bankrot_bot.shared import is_allowed  # ✓ Breaks circular import
-from bot import list_cases  # TODO: Move to database module
+from bankrot_bot.services.cases_db import list_cases  # ✓ Breaks circular import with bot.py
 
 
 # Create router for callback handlers
