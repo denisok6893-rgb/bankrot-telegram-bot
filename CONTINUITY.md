@@ -162,3 +162,8 @@ psql -U bankrot -c "SELECT count(*) FROM practice"
 - сервис активен
 
 Следующий немедленный шаг — реализация Practice Module v1.
+
+## Update 2026-01-16
+- Reply keyboard merged (#19), 28→2 branches
+- Deploy stable: healthy containers, updates 84ms
+- Next: feature/refactor-structure (services/states.py)
