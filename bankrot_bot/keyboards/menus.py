@@ -12,6 +12,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="❓ Помощь")],
         ],
         resize_keyboard=True,
+        one_time_keyboard=False,
         input_field_placeholder="Выберите раздел…",
     )
 
