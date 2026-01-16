@@ -1,163 +1,111 @@
-# Bot.py Refactoring Guide
+# Bot.py Refactoring Progress
 
-## Current State
-- **bot.py**: 4332 lines (MONOLITHIC - too large!)
-- **handlers/cases.py**: 475 lines (already extracted ✓)
-- **services/**: docx_forms.py, database.py (working ✓)
+## Goal
+Extract handlers from bot.py into modular files in `handlers/` directory for better maintainability.
 
-## Problem
-bot.py is unmaintainable at 4332 lines. Need to extract handlers into modules.
+## Branch Strategy
+**Main refactor branch**: `claude/add-case-callbacks-phase-8-e3i3K`
 
-## Refactoring Strategy
+## Progress Overview
 
-### Phase 1: Extract Callback Handlers ✓ SKELETON CREATED
-**Target**: Reduce bot.py by ~1500-2000 lines
+### Callback Handlers (handlers/callbacks.py)
+**Total in bot.py**: ~58 callbacks
+**Migrated**: 14 callbacks (24%)
+**Remaining**: ~44 callbacks
 
-**Status**: Skeleton created in `handlers/callbacks.py`
+| Phase | Category | Handlers | Status | Commit |
+|-------|----------|----------|--------|--------|
+| 8 | CASE (part 1) | 5 | ✅ Complete | f338312 |
+| 9 | CASE (part 2) | 4 | ✅ Complete | 150487e |
+| 10 | PROFILE + AI/MISC | 5 | ✅ Complete | 7f10311 |
 
-**58 callback handlers identified:**
-```python
-# Menu callbacks (5): menu:home, menu:profile, menu:docs, menu:help, menu:my_cases
-# Help callbacks (5): help:howto, help:cases, help:docs, help:contacts, help:about
-# Docs callbacks (2): docs_cat:*, docs_item:*
-# Profile callbacks (1): profile:cases
-# Case callbacks (20+): case:open:*, case:docs:*, case:gen:*, case:file:*, etc.
-# AI/Misc (2): ai:placeholder, noop
-```
+### Completed Handlers
 
-**Line ranges in bot.py** (found via grep):
-- Callbacks start: ~line 1472
-- Callbacks end: ~line 2100+ (estimated)
+#### CASE Callbacks (9 handlers) ✅
+1. `case:edit:` (count==2) - Edit menu shell (bot.py:2072-2166)
+2. `case:file:` - File send (bot.py:2347-2373)
+3. `case:open:` - Open case (bot.py:2694-2735)
+4. `case:card:` - Card open (bot.py:2738-2773)
+5. `case:card:` - Card menu (bot.py:3037-3048)
+6. `case:card_edit:` - Card edit (bot.py:3050-3085)
+7. `case:cardfield:` - Card field start (bot.py:3127-3155)
+8. `case:creditors:` - Creditors menu (bot.py:3312-3324)
+9. `case:edit:` (count==3) - Case edit start + FSM (bot.py:3591-3682)
 
-**Next steps:**
-1. Copy each handler function from bot.py to handlers/callbacks.py
-2. Remove TODO comments and add actual implementation
-3. Test each group (menu, help, docs, cases) incrementally
-4. Import and register in bot.py: `from handlers.callbacks import register_callbacks`
+#### PROFILE Callbacks (2 handlers) ✅
+1. `profile:menu` - Show profile (bot.py:2198-2227)
+2. `profile:edit` - Start profile editing FSM (bot.py:2228-2238)
 
-### Phase 2: Extract FSM Handlers (Future)
-**Target**: Multi-step conversation flows
+#### AI/MISC Callbacks (3 handlers) ✅
+1. `ai:placeholder` - AI feature placeholder (bot.py:1552-1560)
+2. `noop` - No-operation callback (bot.py:1999-2001)
+3. `back:main` - Back to main menu (bot.py:2385-2388)
 
-**FSM States to extract** (search for `State` and `StatesGroup` in bot.py):
-- AddCase (bankruptcy case creation flow)
-- AddParty (creditor/debtor party flow)
-- AddAsset (asset addition flow)
-- AddDebt (debt addition flow)
-- EditCase (case editing flow)
+### Remaining Handlers (~44)
 
-**Create**: `handlers/fsm.py` with FSM handlers
+#### High Priority
+- [ ] Navigation callbacks (case:list, case:new, back:cases, docs:back_menu)
+- [ ] Docs callbacks (docs:choose_case, docs:case:*, docs:petition:*)
+- [ ] Creditors FSM callbacks (creditors:add:*, creditors:del:*, creditors:delone:*, creditors:text:*, creditors:text_clear:*)
+- [ ] Card fill callbacks (card:fill:*)
 
-### Phase 3: Extract Command Handlers (Future)
-**Target**: Simple command handlers
+#### Medium Priority
+- [ ] Party/Asset/Debt callbacks (FSM-based)
+- [ ] Document generation callbacks
+- [ ] Archive callbacks
 
-**Commands to extract** (search for `@dp.message(Command` in bot.py):
-- /start
-- /help
-- /menu
-- /cases
-- /newcase
-- /profile
-- etc.
+#### Low Priority
+- [ ] Misc navigation and utility callbacks
 
-**Create**: `handlers/commands.py`
-
-### Phase 4: Extract Message Handlers (Future)
-**Target**: Text/media message handlers
-
-**Create**: `handlers/messages.py` for non-command messages
-
-### Phase 5: Final Cleanup
-- bot.py should only contain:
-  - Imports and configuration
-  - Bot/Dispatcher initialization
-  - Router registration
-  - Main polling loop
-- Target: **bot.py < 300 lines**
-
-## File Structure (Target)
+## File Structure
 
 ```
-bankrot-telegram-bot/
-├── bot.py (< 300 lines: init + main only)
-├── handlers/
-│   ├── __init__.py
-│   ├── callbacks.py (~800 lines: 58 handlers)
-│   ├── cases.py (475 lines: exists ✓)
-│   ├── commands.py (~400 lines: to create)
-│   ├── fsm.py (~600 lines: to create)
-│   └── messages.py (~300 lines: to create)
-├── services/
-│   ├── database.py (✓ working)
-│   ├── docx_forms.py (✓ working)
-│   └── keyboards.py (to create: extract keyboard builders)
-└── config/
-    └── settings.py (to create: extract config)
+handlers/
+├── __init__.py          # Package init with register_callbacks()
+├── callbacks.py         # Callback query handlers (14/58 migrated)
+└── cases.py            # Existing case command handlers (475 lines)
 ```
 
-## Implementation Checklist
+## Integration Status
 
-### Phase 1: Callbacks (CURRENT)
-- [x] Create handlers/ directory
-- [x] Create handlers/__init__.py
-- [x] Create handlers/callbacks.py skeleton
-- [ ] Extract menu:* handlers (5 handlers)
-- [ ] Extract help:* handlers (5 handlers)
-- [ ] Extract docs_* handlers (2 handlers)
-- [ ] Extract profile:* handlers (1 handler)
-- [ ] Extract case:* handlers (20+ handlers)
-- [ ] Extract AI/misc handlers (2 handlers)
-- [ ] Test callback handlers
-- [ ] Register in bot.py
-- [ ] Verify all callbacks work
-- [ ] Commit and push
+### Current State
+- ✅ handlers/ directory created
+- ✅ handlers/__init__.py created
+- ✅ handlers/callbacks.py created with 14 handlers
+- ⚠️ NOT yet integrated into bot.py (handlers not registered)
 
-### Phase 2-5: TBD
-(To be planned after Phase 1 completion)
+### Integration Steps (TODO)
+1. Add imports to bot.py
+2. Remove migrated handlers from bot.py
+3. Register handlers via `register_callbacks(dp)`
+4. Test all migrated functionality
+5. Deploy to Timeweb
 
-## Testing Strategy
+## Statistics
 
-1. **Incremental testing**: Test each category as you extract it
-2. **Keep bot.py running**: Don't remove handlers until new ones are tested
-3. **Use existing test**: Decimal test (500006.68 → DOCX) should still pass
-4. **Verification**:
-   - All menu navigation works
-   - Case creation works
-   - Document generation works
-   - No callback errors in logs
+| Metric | Value |
+|--------|-------|
+| Total callbacks in bot.py | 58 |
+| Migrated to handlers/callbacks.py | 14 |
+| Progress | 24% |
+| Lines in bot.py | ~4,000+ |
+| Lines in handlers/callbacks.py | 509 |
+| Estimated reduction after full migration | ~1,500-2,000 lines |
 
-## Safety Rules
+## Next Steps
 
-1. **NO full bot.py reads**: File is too large (4332 lines)
-2. **Use grep/targeted reads**: Extract specific line ranges
-3. **One category at a time**: Don't extract everything at once
-4. **Test after each extraction**: Verify functionality
-5. **Keep backups**: Use git branches for each phase
+### Phase 11: Navigation Callbacks (next 5)
+- [ ] `case:list` - List all cases
+- [ ] `case:new` - Create new case
+- [ ] `back:cases` - Back to cases menu
+- [ ] `docs:back_menu` - Back to docs menu
+- [ ] `docs:choose_case` - Choose case for docs
 
-## Current Branch
-- Working on: `claude/refactor-bot-py-GMLAX`
-- Merged: `claude/fix-decimal-serialization-bc9cQ` → main ✓
-
-## Grep Patterns for Extraction
-
-```bash
-# Find all callback handlers
-grep -n "^@dp.callback_query" bot.py
-
-# Find callback by prefix
-grep -n "@dp.callback_query.*menu:" bot.py
-
-# Find FSM states
-grep -n "class.*StatesGroup" bot.py
-
-# Find command handlers
-grep -n "@dp.message.*Command" bot.py
-
-# Get function signature
-grep -A1 "@dp.callback_query.*menu:home" bot.py
-```
+### Phase 12: Docs & Creditors Callbacks
+- Continue extracting remaining patterns
 
 ## Notes
-- ✅ Services layer (database, docx_forms) already working
-- ✅ Decimal serialization fix merged
-- ✅ Test infrastructure exists
-- 🎯 Focus: Extract callbacks first (biggest win)
+- All changes are incremental and Timeweb-safe
+- Each phase committed separately for easy rollback
+- Exact code copied from bot.py with source line references
+- No breaking changes to existing functionality

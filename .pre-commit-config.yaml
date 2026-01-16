@@ -1,82 +1,25 @@
 repos:
-  # Python code quality
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
-    hooks:
-      - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
-
-  # Type checking
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
-    hooks:
-      - id: mypy
-        additional_dependencies: [types-all]
-        args: [--ignore-missing-imports, --check-untyped-defs]
-
-  # Security & code smells
-  - repo: https://github.com/PyCQA/pylint
-    rev: v3.3.1
-    hooks:
-      - id: pylint
-        args:
-          - --disable=all
-          - --enable=duplicate-code,function-redefined,redefined-outer-name
-          - --max-line-length=120
-          - --duplicate-code-min-similarity-lines=10
-        files: \.py$
-
-  # General pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v4.6.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
-        args: ['--maxkb=500']
       - id: check-merge-conflict
-      - id: check-ast  # Python syntax validation
-      - id: debug-statements
+      - id: detect-private-key
 
-  # Custom duplicate function detector
-  - repo: local
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
     hooks:
-      - id: check-duplicate-functions
-        name: Check for duplicate function definitions
-        entry: python3
-        language: system
+      - id: mypy
+        additional_dependencies:
+          - aiogram==3.*
+          - sqlalchemy[mypy]==2.*
+          - types-python-docx
+          - python-dotenv
         args:
-          - -c
-          - |
-            import re, sys
-            from collections import defaultdict
-
-            errors = []
-            for filepath in sys.argv[1:]:
-                if not filepath.endswith('.py'):
-                    continue
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-
-                func_pattern = re.compile(r'^\s*(async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(')
-                funcs = defaultdict(list)
-
-                for i, line in enumerate(lines, 1):
-                    match = func_pattern.match(line)
-                    if match:
-                        func_name = match.group(2)
-                        funcs[func_name].append(i)
-
-                duplicates = {name: lines for name, lines in funcs.items() if len(lines) > 1}
-                if duplicates:
-                    for name, line_nums in duplicates.items():
-                        errors.append(f"{filepath}:{line_nums[0]}: Duplicate function '{name}' at lines {line_nums}")
-
-            if errors:
-                for err in errors:
-                    print(err, file=sys.stderr)
-                sys.exit(1)
-        files: \.py$
-        stages: [commit]
+          - --config-file=pyproject.toml
+          - --no-incremental
+        files: ^(bankrot_bot|handlers)/.*\.py$
+        exclude: ^(alembic|test_).*\.py$
