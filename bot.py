@@ -8,8 +8,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from dotenv import load_dotenv
+load_dotenv()
+
 from bankrot_bot.logging_setup import setup_logging
-from bankrot_bot.services.gigachat import gigachat_chat
+#from bankrot_bot.services.gigachat import gigachat_chat
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +52,7 @@ from bankrot_bot.services.docx_forms import (
 import aiohttp
 setup_logging()
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, BufferedInputFile, Message, InlineKeyboardMarkup
@@ -60,6 +63,8 @@ from bankrot_bot.config import load_settings
 # Database and handlers
 from bankrot_bot.database import init_db as init_pg_db
 from bankrot_bot.handlers import cases as cases_handlers
+#from handlers import probability as probability_handlers
+from handlers import newcase_fsm
 
 from bankrot_bot.keyboards.menus import (
     main_menu_kb,
@@ -127,42 +132,6 @@ class AddAsset(StatesGroup):
 # env
 # =========================
 
-
-def _doc_has_placeholders(doc: Document) -> bool:
-    for paragraph in doc.paragraphs:
-        if "{{" in paragraph.text and "}}" in paragraph.text:
-            return True
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    if "{{" in paragraph.text and "}}" in paragraph.text:
-                        return True
-    return False
-
-
-def _replace_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
-    def replace_in_paragraph(paragraph):
-        for run in paragraph.runs:
-            for key, value in mapping.items():
-                placeholder = f"{{{{{key}}}}}"
-                if placeholder in run.text:
-                    run.text = run.text.replace(placeholder, str(value) if value is not None else "-")
-
-    def replace_in_table(table):
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    replace_in_paragraph(paragraph)
-                for nested_table in cell.tables:
-                    replace_in_table(nested_table)
-
-    for paragraph in doc.paragraphs:
-        replace_in_paragraph(paragraph)
-
-    for table in doc.tables:
-        replace_in_table(table)
 
 def build_gender_forms(gender: str | None) -> dict:
     """
@@ -431,42 +400,6 @@ def _old_build_attachments_list(card: dict) -> str:
     if not items:
         return ""
     return "\n".join(f"{i}) {x}" for i, x in enumerate(items, start=1))
-
-
-def _doc_has_placeholders(doc: Document, placeholders) -> bool:
-    targets = list(placeholders)
-
-    def has_in_paragraphs(paragraphs) -> bool:
-        return any(any(t in p.text for t in targets) for p in paragraphs)
-
-    if has_in_paragraphs(doc.paragraphs):
-        return True
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if has_in_paragraphs(cell.paragraphs):
-                    return True
-    return False
-
-
-def _replace_placeholders(doc: Document, context: dict) -> None:
-    def replace_text(text: str) -> str:
-        for k, v in context.items():
-            if k in text:
-                text = text.replace(k, v)
-        return text
-
-    def process_paragraphs(paragraphs):
-        for p in paragraphs:
-            if any(k in p.text for k in context.keys()):
-                p.text = replace_text(p.text)
-
-    process_paragraphs(doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                process_paragraphs(cell.paragraphs)
 
 def _set_paragraph_text_keep_style(paragraph, new_text: str) -> None:
     """
@@ -911,6 +844,24 @@ GENERATED_DIR = settings["GENERATED_DIR"]
 
 DB_PATH = settings["DB_PATH"]
 
+# Initialize cases_db module with database path
+from bankrot_bot.services.cases_db import (
+    init_cases_db,
+    list_cases,
+    get_case,
+    create_case,
+    update_case_fields,
+    update_case_meta,
+    get_case_card,
+    validate_case_card,
+    get_profile,
+    upsert_profile,
+    migrate_case_cards_table,
+    CASE_CARD_REQUIRED_FIELDS,
+    CASE_CARDS_ALLOWED_COLUMNS,
+)
+init_cases_db(DB_PATH)
+
 def _parse_ids(s: str) -> set[int]:
     out = set()
     for x in (s.split(",") if s else []):
@@ -923,37 +874,8 @@ def _parse_ids(s: str) -> set[int]:
 ALLOWED_USERS = _parse_ids(RAW_ALLOWED)
 ADMIN_USERS = _parse_ids(RAW_ADMINS)
 
-
-def is_allowed(uid: int) -> bool:
-    return (not ALLOWED_USERS) or (uid in ALLOWED_USERS) or (uid in ADMIN_USERS)
-
-
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_USERS
-
-
-def migrate_case_cards_table(con: sqlite3.Connection | None = None) -> set[str]:
-    close_con = con is None
-    if con is None:
-        con = sqlite3.connect(DB_PATH)
-
-    cur = con.cursor()
-    cur.execute("PRAGMA table_info(case_cards)")
-    cols = {row[1] for row in cur.fetchall()}
-
-    for col in ("data", "court_address", "judge_name", "debtor_full_name"):
-        if col not in cols:
-            cur.execute(f"ALTER TABLE case_cards ADD COLUMN {col} TEXT")
-
-    con.commit()
-
-    cur.execute("PRAGMA table_info(case_cards)")
-    result = {row[1] for row in cur.fetchall()}
-
-    if close_con:
-        con.close()
-
-    return result
+# Import authorization functions from shared module to break circular imports
+from bankrot_bot.shared import is_allowed, is_admin, init_allowed_users
 
 
 # =========================
@@ -1015,262 +937,6 @@ def init_db() -> None:
 
         migrate_case_cards_table(con)
         con.commit()
-
-
-def _now() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def create_case(owner_user_id: int, code_name: str) -> int:
-    now = _now()
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            "INSERT INTO cases (owner_user_id, code_name, created_at, updated_at) VALUES (?,?,?,?)",
-            (owner_user_id, code_name.strip(), now, now),
-        )
-        con.commit()
-        return int(cur.lastrowid)
-
-
-def list_cases(owner_user_id: int, limit: int = 20) -> List[Tuple]:
-    """
-    Получить список дел пользователя.
-
-    Args:
-        owner_user_id: ID пользователя-владельца
-        limit: Максимальное количество дел (по умолчанию 20)
-
-    Returns:
-        Список кортежей: (id, code_name, case_number, stage, updated_at)
-    """
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            "SELECT id, code_name, case_number, stage, updated_at "
-            "FROM cases WHERE owner_user_id=? ORDER BY id DESC LIMIT ?",
-            (owner_user_id, limit),
-        )
-        return cur.fetchall()
-
-
-def get_case(owner_user_id: int, cid: int) -> Tuple | None:
-    """
-    Получить полную информацию о деле.
-
-    Args:
-        owner_user_id: ID пользователя-владельца
-        cid: ID дела
-
-    Returns:
-        Кортеж с данными дела или None если не найдено
-    """
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            SELECT id, owner_user_id, code_name, case_number, court, judge, fin_manager,
-                   stage, notes, created_at, updated_at
-              FROM cases
-             WHERE owner_user_id = ?
-               AND id = ?
-             """,
-             (owner_user_id, cid),
-        )
-        return cur.fetchone()
-
-def get_profile(owner_user_id: int) -> tuple | None:
-    """
-    Получить профиль пользователя.
-
-    Args:
-        owner_user_id: ID пользователя
-
-    Returns:
-        Кортеж с данными профиля или None
-    """
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            "SELECT owner_user_id, full_name, role, address, phone, email, created_at, updated_at "
-            "FROM profiles WHERE owner_user_id=?",
-            (owner_user_id,),
-        )
-        return cur.fetchone()
-
-
-def upsert_profile(
-    owner_user_id: int,
-    *,
-    full_name: str | None = None,
-    role: str | None = None,
-    address: str | None = None,
-    phone: str | None = None,
-    email: str | None = None,
-) -> None:
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            INSERT INTO profiles (owner_user_id, full_name, role, address, phone, email, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(owner_user_id) DO UPDATE SET
-                full_name = COALESCE(excluded.full_name, profiles.full_name),
-                role      = COALESCE(excluded.role, profiles.role),
-                address   = COALESCE(excluded.address, profiles.address),
-                phone     = COALESCE(excluded.phone, profiles.phone),
-                email     = COALESCE(excluded.email, profiles.email),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (owner_user_id, full_name, role, address, phone, email),
-        )
-        con.commit()
-
-def update_case_fields(
-    owner_user_id: int,
-    cid: int,
-    *,
-    case_number: str | None = None,
-    court: str | None = None,
-    judge: str | None = None,
-    fin_manager: str | None = None,
-) -> None:
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            UPDATE cases
-               SET case_number = COALESCE(?, case_number),
-                   court = COALESCE(?, court),
-                   judge = COALESCE(?, judge),
-                   fin_manager = COALESCE(?, fin_manager),
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?
-               AND owner_user_id = ?
-            """,
-            (case_number, court, judge, fin_manager, cid, owner_user_id),
-        )
-        con.commit()
-
-def update_case_meta(
-    owner_user_id: int,
-    cid: int,
-    *,
-    stage: str | None = None,
-    notes: str | None = None,
-) -> None:
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            UPDATE cases
-               SET stage = COALESCE(?, stage),
-                   notes = COALESCE(?, notes),
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?
-               AND owner_user_id = ?
-            """,
-            (stage, notes, cid, owner_user_id),
-        )
-        con.commit()
-
-
-CASE_CARD_REQUIRED_FIELDS = [
-    "court_name",
-    "court_address",
-    "debtor_full_name",
-    "debtor_last_name",
-    "debtor_first_name",
-    "debtor_gender",
-    "debtor_birth_date",
-    "debtor_address",
-    "passport_series",
-    "passport_number",
-    "passport_issued_by",
-    "passport_date",
-    "passport_code",
-    "total_debt_rubles",
-    "total_debt_kopeks",
-]
-
-
-def validate_case_card(card: dict[str, Any]) -> dict[str, list[str]]:
-    """
-    Валидация карточки дела.
-
-    Args:
-        card: Словарь с данными карточки дела
-
-    Returns:
-        Словарь с ключом "missing" содержащим список отсутствующих полей
-    """
-    missing = []
-    for field in CASE_CARD_REQUIRED_FIELDS:
-        val = card.get(field)
-        if val is None or str(val).strip() == "":
-            missing.append(field)
-    return {"missing": missing}
-
-
-def _compose_debtor_full_name(data: dict[str, Any]) -> str | None:
-    """Составляет полное ФИО должника из отдельных полей."""
-    last = (data.get("debtor_last_name") or "").strip()
-    first = (data.get("debtor_first_name") or "").strip()
-    middle = (data.get("debtor_middle_name") or "").strip()
-    parts = [p for p in (last, first, middle) if p]
-    return " ".join(parts) if parts else None
-
-
-def get_case_card(owner_user_id: int, cid: int) -> dict[str, Any]:
-    """
-    Получить карточку дела с данными должника.
-
-    Args:
-        owner_user_id: ID пользователя-владельца
-        cid: ID дела
-
-    Returns:
-        Словарь с данными карточки дела
-    """
-    migrate_case_cards_table()
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            SELECT data, court_name, court_address, judge_name, debtor_full_name
-              FROM case_cards
-             WHERE owner_user_id = ?
-               AND case_id = ?
-            """,
-            (owner_user_id, cid),
-        )
-        row = cur.fetchone()
-
-    base: dict[str, Any] = {}
-    if row:
-        raw_data, court_name, court_address, judge_name, debtor_full_name = row
-        if raw_data:
-            try:
-                base = json.loads(raw_data)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse case card JSON for case_id={cid}: {e}")
-                base = {}
-        if court_name and not base.get("court_name"):
-            base["court_name"] = court_name
-        if court_address and not base.get("court_address"):
-            base["court_address"] = court_address
-        if judge_name and not base.get("judge_name"):
-            base["judge_name"] = judge_name
-        if debtor_full_name and not base.get("debtor_full_name"):
-            base["debtor_full_name"] = debtor_full_name
-
-    for field in CASE_CARD_REQUIRED_FIELDS:
-        base.setdefault(field, None)
-
-    if base.get("debtor_full_name") is None:
-        base["debtor_full_name"] = _compose_debtor_full_name(base)
-
-    return base
 
 
 def upsert_case_card(owner_user_id: int, case_id: int, data: dict[str, Any]) -> None:
@@ -1337,8 +1003,50 @@ redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 storage = RedisStorage.from_url(redis_url)
 dp = Dispatcher(storage=storage)
 
-# Register cases router
+# =========================
+# ROUTER REGISTRATION - PRIORITY ORDER MATTERS!
+# =========================
+# Router order determines handler priority (first registered = highest priority).
+# This prevents message routing conflicts and ensures predictable behavior.
+#
+# PRIORITY ORDER (highest to lowest):
+# 1. COMMANDS - cases_handlers.router (Command handlers with explicit StateFilter)
+#    - /newcase, /mycases, /case, /setactive, /editcase, /cancel
+#    - These must run FIRST to catch commands before FSM or text handlers
+#
+# 2. FSM STATES - newcase_fsm.router (FSM handlers with explicit StateFilter)
+#    - F.text == "➕ Новое дело" with StateFilter(None) - only when NOT in FSM
+#    - NewCase FSM states with StateFilter - only when IN specific FSM state
+#    - StateFilter prevents conflicts with commands and other handlers
+#
+# 3. DIRECT DP HANDLERS - Callbacks and other handlers registered directly on dp
+#    - @dp.callback_query() - Callback query handlers
+#    - @dp.message(StateFilter(...)) - FSM handlers (AddParty, AddAsset, etc.)
+#    - These run LAST as fallback/catch-all handlers
+#
+# CRITICAL RULES:
+# ✅ ALL FSM state handlers MUST use StateFilter to prevent catching commands
+# ✅ Command handlers run first (registered routers before direct dp handlers)
+# ✅ Text filters (F.text) MUST have StateFilter or be very specific
+# ✅ Callback handlers can be registered anywhere (F.data is specific enough)
+#
+# DO NOT change router order without understanding priority implications!
+# =========================
+
+# 1. Commands (highest priority)
 dp.include_router(cases_handlers.router)
+
+# 2. FSM states with StateFilter
+# Register probability router (Phase 9)
+# dp.include_router(probability_handlers.router)
+# Register new case FSM router (Phase 12 fix)
+dp.include_router(newcase_fsm.router)
+
+# 3. Callback handlers (refactored menu system)
+from handlers.callbacks import callback_router
+dp.include_router(callback_router)
+
+# 4. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
@@ -1348,13 +1056,7 @@ def cancel_flow(uid: int) -> None:
     USER_FLOW.pop(uid, None)
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
-    """Главная клавиатура выбора типа документа."""
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📝 Ходатайство", callback_data="flow:motion")
-    kb.button(text="🤝 Мировое соглашение", callback_data="flow:settlement")
-    kb.adjust(1)
-    return kb.as_markup()
+# main_keyboard() definition removed - see line 4336 for active implementation
 
 
 def export_keyboard() -> InlineKeyboardMarkup:
@@ -1456,21 +1158,42 @@ def build_settlement_user_text(ans: Dict[str, str]) -> str:
 # =========================
 
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message) -> None:
+    """
+    Handle /start command.
+
+    Shows welcome message with main menu to authorized users.
+    Refactored to use InlineKeyboardMarkup only.
+
+    Args:
+        message: Incoming /start command message
+    """
     uid = message.from_user.id
     if not is_allowed(uid):
+        logger.warning(f"Unauthorized /start attempt by user {uid}")
         return
     cancel_flow(uid)
 
-    await message.answer(
-        "Бот запущен. Нажмите «Старт», чтобы открыть меню.",
-        reply_markup=main_menu_kb(),
+    # Import refactored main menu
+    from keyboards import main_menu
+
+    text = (
+        "🏠 Добро пожаловать!\n\n"
+        "Бот-помощник по банкротству физических лиц.\n\n"
+        "Выберите раздел для работы:"
     )
-    await message.answer("▶️ Запуск:", reply_markup=start_ikb())
+
+    await message.answer(text, reply_markup=main_menu())
 
 
 @dp.callback_query(F.data == "menu:home")
-async def menu_home(call: CallbackQuery):
+async def menu_home(call: CallbackQuery) -> None:
+    """
+    Navigate to home/main menu.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1480,7 +1203,13 @@ async def menu_home(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:profile")
-async def menu_profile(call: CallbackQuery):
+async def menu_profile(call: CallbackQuery) -> None:
+    """
+    Navigate to user profile menu.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1490,8 +1219,15 @@ async def menu_profile(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:docs")
-async def menu_docs(call: CallbackQuery):
-    """Публичный каталог документов - доступен всем."""
+async def menu_docs(call: CallbackQuery) -> None:
+    """
+    Navigate to public documents catalog.
+
+    Публичный каталог документов - доступен всем авторизованным пользователям.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1506,8 +1242,15 @@ async def menu_docs(call: CallbackQuery):
 
 
 @dp.callback_query(F.data == "menu:help")
-async def menu_help(call: CallbackQuery):
-    """Подменю раздела Помощь."""
+async def menu_help(call: CallbackQuery) -> None:
+    """
+    Navigate to help section.
+
+    Подменю раздела Помощь.
+
+    Args:
+        call: Callback query from menu navigation
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -1762,19 +1505,7 @@ async def profile_cases(call: CallbackQuery):
     await call.answer()
 
 
-@dp.callback_query(F.data.startswith("case:open:"))
-async def case_open(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    case_id = int(call.data.split(":")[-1])
-    await call.message.answer(
-        f"🗂 Карточка дела #{case_id}\nВыберите действие:",
-        reply_markup=case_card_ikb(case_id),
-    )
-    await call.answer()
+# case_open() DUPLICATE REMOVED - see line ~2700 for active implementation
 
 @dp.callback_query(F.data.startswith("case:docs:"))
 async def case_docs(call: CallbackQuery, state: FSMContext):
@@ -1961,40 +1692,7 @@ async def case_file_send_by_index(call: CallbackQuery):
     await call.message.answer_document(FSInputFile(path))
     await call.answer()
 
-@dp.callback_query(F.data.startswith("case:file:"))
-async def case_file_send(call: CallbackQuery):
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-
-    # формат: case:file:<case_id>:<filename>
-    parts = call.data.split(":", 3)
-    if len(parts) != 4:
-        await call.answer("Некорректная команда")
-        return
-
-    case_id = int(parts[2])
-    filename = parts[3]
-
-    if ("/" in filename) or ("\\" in filename) or (".." in filename):
-        await call.message.answer("Некорректное имя файла.")
-        await call.answer()
-        return
-
-    case_dir = GENERATED_DIR / "cases" / str(case_id)
-    path = case_dir / filename
-
-    if not path.exists():
-        await call.message.answer("Файл не найден (возможно, удалён).")
-        await call.answer()
-        return
-
-    await call.message.answer_document(
-        FSInputFile(path),
-        caption=f"📄 Документ по делу #{case_id}",
-    )
-    await call.answer()
+# case_file_send() DUPLICATE REMOVED - see line ~2350 for active implementation
 
 @dp.callback_query(F.data == "noop")
 async def noop(call: CallbackQuery):
@@ -2344,8 +2042,18 @@ async def docs_petition(call: CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("case:file:"))
-async def case_file_send(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("case:file:"))
+async def case_file_send(call: CallbackQuery) -> None:
+    """
+    Send a document file from case directory to user.
+
+    Callback format: case:file:<case_id>:<filename>
+
+    Args:
+        call: Telegram callback query with file request
+
+    Security: Validates filename to prevent directory traversal attacks
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
@@ -2353,24 +2061,33 @@ async def case_file_send(call: CallbackQuery):
 
     parts = call.data.split(":", maxsplit=3)
     if len(parts) < 4:
-        await call.answer()
+        logger.warning(f"Invalid case:file callback format: {call.data}")
+        await call.answer("Некорректный формат команды")
         return
 
     cid_str, filename = parts[2], parts[3]
 
+    # Security: Prevent directory traversal attacks
     if any(bad in filename for bad in ("/", "\\", "..")):
+        logger.warning(f"Directory traversal attempt by user {uid}: {filename}")
         await call.message.answer("Некорректное имя файла")
         await call.answer()
         return
 
     path = GENERATED_DIR / "cases" / cid_str / filename
     if not path.is_file():
-        await call.message.answer("Файл не найден...")
+        logger.info(f"File not found: {path}")
+        await call.message.answer("Файл не найден")
         await call.answer()
         return
 
-    await call.message.answer_document(FSInputFile(path))
-    await call.answer()
+    try:
+        await call.message.answer_document(FSInputFile(path))
+        await call.answer()
+    except Exception as e:
+        logger.error(f"Failed to send file {path}: {e}")
+        await call.message.answer("Ошибка при отправке файла")
+        await call.answer()
 
 
 @dp.callback_query(lambda c: c.data == "docs:back_menu")
@@ -2467,7 +2184,7 @@ async def case_new(call: CallbackQuery, state: FSMContext):
     await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
     await call.answer()
 
-@dp.message(CaseCreate.code_name)
+@dp.message(StateFilter(CaseCreate.code_name))
 async def case_step_code_name(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2482,7 +2199,7 @@ async def case_step_code_name(message: Message, state: FSMContext):
     await state.set_state(CaseCreate.case_number)
     await message.answer("Теперь введи номер дела (можно '-' если пока нет).")
 
-@dp.message(CaseCreate.case_number)
+@dp.message(StateFilter(CaseCreate.case_number))
 async def case_step_case_number(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2497,7 +2214,7 @@ async def case_step_case_number(message: Message, state: FSMContext):
     await state.set_state(CaseCreate.court)
     await message.answer("Укажи суд (например: АС г. Москвы) или '-'.")
 
-@dp.message(ProfileFill.full_name)
+@dp.message(StateFilter(ProfileFill.full_name))
 async def profile_step_full_name(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2512,7 +2229,7 @@ async def profile_step_full_name(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.role)
     await message.answer("Статус в деле (например: должник / представитель / кредитор).")
 
-@dp.message(ProfileFill.role)
+@dp.message(StateFilter(ProfileFill.role))
 async def profile_step_role(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2527,7 +2244,7 @@ async def profile_step_role(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.address)
     await message.answer("Адрес (для шапки документа). Можно '-' если не нужно.")
 
-@dp.message(ProfileFill.address)
+@dp.message(StateFilter(ProfileFill.address))
 async def profile_step_address(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2542,7 +2259,7 @@ async def profile_step_address(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.phone)
     await message.answer("Телефон. Можно '-' если не нужно.")
 
-@dp.message(ProfileFill.phone)
+@dp.message(StateFilter(ProfileFill.phone))
 async def profile_step_phone(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2556,7 +2273,7 @@ async def profile_step_phone(message: Message, state: FSMContext):
     await state.update_data(phone=None if text == "-" else text)
     await state.set_state(ProfileFill.email)
     await message.answer("Email. Можно '-' если не нужно.")
-@dp.message(ProfileFill.email)
+@dp.message(StateFilter(ProfileFill.email))
 async def profile_step_email(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2586,7 +2303,7 @@ async def profile_step_email(message: Message, state: FSMContext):
         "Можешь открыть «👤 Мой профиль», чтобы проверить."
     )
 
-@dp.message(CaseCreate.court)
+@dp.message(StateFilter(CaseCreate.court))
 async def case_step_court(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2602,7 +2319,7 @@ async def case_step_court(message: Message, state: FSMContext):
     await message.answer("Укажи судью (ФИО) или '-'.")
 
 
-@dp.message(CaseCreate.judge)
+@dp.message(StateFilter(CaseCreate.judge))
 async def case_step_judge(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2618,7 +2335,7 @@ async def case_step_judge(message: Message, state: FSMContext):
     await message.answer("Укажи финансового управляющего или '-'.")
 
 
-@dp.message(CaseCreate.fin_manager)
+@dp.message(StateFilter(CaseCreate.fin_manager))
 async def case_step_fin_manager(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2691,33 +2408,50 @@ async def back_to_cases(call: CallbackQuery):
     )
     await call.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("case:open:"))
-async def case_open(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("case:open:"))
+async def case_open(call: CallbackQuery) -> None:
+    """
+    Display full case card with all details and editing options.
+
+    Callback format: case:open:<case_id>
+    Shows: code_name, case_number, court, judge, manager, stage, notes, timestamps
+
+    Args:
+        call: Callback query from cases list
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
         await call.answer()
         return
 
-    cid = int(call.data.split(":")[2])
+    try:
+        cid = int(call.data.split(":")[2])
+    except (ValueError, IndexError) as e:
+        logger.error(f"Invalid callback data format: {call.data}, error: {e}")
+        await call.answer("Ошибка формата данных")
+        return
+
     row = get_case(uid, cid)
     if not row:
-        await call.message.answer("Дело не найдено.")
+        logger.info(f"Case {cid} not found or access denied for user {uid}")
+        await call.message.answer("Дело не найдено или у вас нет доступа.")
         await call.answer()
         return
 
-    (cid, _owner_user_id, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
+    (cid, _owner_user_id, code_name, case_number, court, judge,
+     fin_manager, stage, notes, created_at, updated_at) = row
 
     text = (
         f"📌 Дело #{cid}\n"
-        f"Код: {code_name}\n"
-        f"Номер: {case_number or '-'}\n"
-        f"Суд: {court or '-'}\n"
-        f"Судья: {judge or '-'}\n"
-        f"ФУ: {fin_manager or '-'}\n"
-        f"Стадия: {stage or '-'}\n"
-        f"Заметки: {notes or '-'}\n"
-        f"Создано: {created_at}\n"
-        f"Обновлено: {updated_at}"
+        f"📋 Код: {code_name}\n"
+        f"📄 Номер: {case_number or '—'}\n"
+        f"🏛 Суд: {court or '—'}\n"
+        f"⚖️ Судья: {judge or '—'}\n"
+        f"👤 Фин. управляющий: {fin_manager or '—'}\n"
+        f"📊 Стадия: {stage or '—'}\n"
+        f"📝 Заметки: {notes or '—'}\n"
+        f"📅 Создано: {created_at}\n"
+        f"🔄 Обновлено: {updated_at}"
     )
 
     kb = InlineKeyboardBuilder()
@@ -3195,7 +2929,7 @@ def _normalize_card_input(field: str, text: str) -> tuple[bool, str | int | None
     return True, cleaned, None
 
 
-@dp.message(CaseCardFill.waiting_value)
+@dp.message(StateFilter(CaseCardFill.waiting_value))
 async def case_card_value_set(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3432,7 +3166,7 @@ async def creditors_text_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@dp.message(CreditorsFill.creditors_text)
+@dp.message(StateFilter(CreditorsFill.creditors_text))
 async def creditors_text_set(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3461,7 +3195,7 @@ async def creditors_text_set(message: Message, state: FSMContext):
     await send_creditors_menu(message, uid, cid)
 
 
-@dp.message(CreditorsFill.name)
+@dp.message(StateFilter(CreditorsFill.name))
 async def creditors_step_name(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     if not txt or txt == "-":
@@ -3476,7 +3210,7 @@ async def creditors_step_name(message: Message, state: FSMContext):
     await message.answer("ИНН (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.inn)
+@dp.message(StateFilter(CreditorsFill.inn))
 async def creditors_step_inn(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3489,7 +3223,7 @@ async def creditors_step_inn(message: Message, state: FSMContext):
     await message.answer("ОГРН (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.ogrn)
+@dp.message(StateFilter(CreditorsFill.ogrn))
 async def creditors_step_ogrn(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3502,7 +3236,7 @@ async def creditors_step_ogrn(message: Message, state: FSMContext):
     await message.answer("Адрес кредитора (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.address)
+@dp.message(StateFilter(CreditorsFill.address))
 async def creditors_step_address(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3515,7 +3249,7 @@ async def creditors_step_address(message: Message, state: FSMContext):
     await message.answer("Сумма долга (рубли) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.debt_rubles)
+@dp.message(StateFilter(CreditorsFill.debt_rubles))
 async def creditors_step_debt_rubles(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3532,7 +3266,7 @@ async def creditors_step_debt_rubles(message: Message, state: FSMContext):
     await message.answer("Сумма долга (копейки 0-99) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.debt_kopeks)
+@dp.message(StateFilter(CreditorsFill.debt_kopeks))
 async def creditors_step_debt_kopeks(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3557,7 +3291,7 @@ async def creditors_step_debt_kopeks(message: Message, state: FSMContext):
     await message.answer("Основание/комментарий (например: выписка ОКБ) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.note)
+@dp.message(StateFilter(CreditorsFill.note))
 async def creditors_step_note(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3629,7 +3363,7 @@ async def case_edit_start(call: CallbackQuery, state: FSMContext):
     )
 
     await call.answer()
-@dp.message(CaseEdit.value)
+@dp.message(StateFilter(CaseEdit.value))
 async def case_edit_apply(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3680,79 +3414,40 @@ async def case_edit_apply(message: Message, state: FSMContext):
     fake.message = message
     await case_edit_menu(fake, state)
 
-@dp.message(Command("case_new"))
-async def case_new_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Формат: /case_new КОДОВОЕ_НАЗВАНИЕ\nПример: /case_new Дело_Иванов_01")
-        return
-    cid = create_case(uid, parts[1])
-    await message.answer(f"✅ Дело создано. ID: {cid}")
-
-@dp.message(Command("cases"))
-async def cases_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    rows = list_cases(uid)
-    if not rows:
-        await message.answer("Пока нет дел. Создай: /case_new КОДОВОЕ_НАЗВАНИЕ")
-        return
-    lines = ["📋 Ваши дела (последние 20):"]
-    for (cid, code_name, case_number, stage, updated_at) in rows:
-        lines.append(f"#{cid} | {code_name} | № {case_number or '—'} | стадия: {stage or '—'} | upd: {updated_at}")
-    await message.answer("\n".join(lines))
-
-
-@dp.message(Command("case"))
-async def case_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: /case ID\nПример: /case 3")
-        return
-    cid = int(parts[1])
-    row = get_case(uid, cid)
-    if not row:
-        await message.answer("Не найдено (или это не ваше дело).")
-        return
-    (cid, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
-    text = (
-        f"📌 Дело #{cid}\n"
-        f"Код: {code_name}\n"
-        f"Номер дела: {case_number or '—'}\n"
-        f"Суд: {court or '—'}\n"
-        f"Судья: {judge or '—'}\n"
-        f"ФУ: {fin_manager or '—'}\n"
-        f"Стадия: {stage or '—'}\n"
-        f"Заметки: {notes or '—'}\n"
-        f"Создано: {created_at}\n"
-        f"Обновлено: {updated_at}\n"
-    )
-    await message.answer(text)
+# =========================
+# ROUTER CONFLICT FIX: Duplicate commands removed
+# =========================
+# These command handlers are now handled by bankrot_bot/handlers/cases.py
+# which uses the newer PostgreSQL implementation instead of SQLite.
+# Commands available in handlers/cases.py:
+#   - /newcase (was /case_new here)
+#   - /mycases (was /cases here)
+#   - /case <id> (same)
+#   - /setactive <id>
+#   - /editcase
+#   - /cancel
+# =========================
+# @dp.message(Command("case_new"))  # REMOVED - use /newcase from handlers/cases.py
+# @dp.message(Command("cases"))     # REMOVED - use /mycases from handlers/cases.py
+# @dp.message(Command("case"))      # REMOVED - use /case from handlers/cases.py
 
 
 # =========================
 # FSM handlers for AddParty and AddAsset (must be BEFORE catch-all!)
 # =========================
 
-@dp.message(AddParty.name)
+@dp.message(StateFilter(AddParty.name))
 async def process_party_name(message: Message, state: FSMContext):
-    """Обработать ввод имени кредитора/должника."""
+    """Обработать ввод имени кредитора/должника. ONLY active in AddParty.name state."""
     logger.info(f"User {message.from_user.id} entered party name in AddParty FSM")
     await state.update_data(name=message.text.strip())
     await message.answer("Введите сумму (например: 100000 или 100 000.50):")
     await state.set_state(AddParty.amount)
 
 
-@dp.message(AddParty.amount)
+@dp.message(StateFilter(AddParty.amount))
 async def process_party_amount(message: Message, state: FSMContext):
-    """Обработать ввод суммы."""
+    """Обработать ввод суммы. ONLY active in AddParty.amount state."""
     logger.info(f"User {message.from_user.id} entered party amount in AddParty FSM")
     # Normalize to JSON-safe string for Redis FSM storage
     amount_str = normalize_amount_to_string(message.text)
@@ -3766,9 +3461,9 @@ async def process_party_amount(message: Message, state: FSMContext):
     await state.set_state(AddParty.basis)
 
 
-@dp.message(AddParty.basis)
+@dp.message(StateFilter(AddParty.basis))
 async def process_party_basis(message: Message, state: FSMContext):
-    """Завершить добавление кредитора/должника."""
+    """Завершить добавление кредитора/должника. ONLY active in AddParty.basis state."""
     logger.info(f"User {message.from_user.id} completing AddParty FSM")
     basis = message.text.strip() if message.text.strip() != "-" else None
 
@@ -3792,27 +3487,27 @@ async def process_party_basis(message: Message, state: FSMContext):
     await state.clear()
 
 
-@dp.message(AddAsset.kind)
+@dp.message(StateFilter(AddAsset.kind))
 async def process_asset_kind(message: Message, state: FSMContext):
-    """Обработать ввод вида имущества."""
+    """Обработать ввод вида имущества. ONLY active in AddAsset.kind state."""
     logger.info(f"User {message.from_user.id} entered asset kind in AddAsset FSM")
     await state.update_data(kind=message.text.strip())
     await message.answer("Введите описание (адрес, марка, реквизиты и т.п.):")
     await state.set_state(AddAsset.description)
 
 
-@dp.message(AddAsset.description)
+@dp.message(StateFilter(AddAsset.description))
 async def process_asset_description(message: Message, state: FSMContext):
-    """Обработать ввод описания."""
+    """Обработать ввод описания. ONLY active in AddAsset.description state."""
     logger.info(f"User {message.from_user.id} entered asset description in AddAsset FSM")
     await state.update_data(description=message.text.strip())
     await message.answer("Введите стоимость (или '-' для пропуска):")
     await state.set_state(AddAsset.value)
 
 
-@dp.message(AddAsset.value)
+@dp.message(StateFilter(AddAsset.value))
 async def process_asset_value(message: Message, state: FSMContext):
-    """Завершить добавление имущества."""
+    """Завершить добавление имущества. ONLY active in AddAsset.value state."""
     logger.info(f"User {message.from_user.id} completing AddAsset FSM")
     value_text = message.text.strip()
 
@@ -4257,9 +3952,15 @@ async def main():
     import logging
     logger = logging.getLogger(__name__)
 
+    # Initialize authorization module FIRST (breaks circular imports)
+    init_allowed_users(ALLOWED_USERS, ADMIN_USERS)
+    logger.info(f"Authorization initialized: {len(ALLOWED_USERS)} allowed users, {len(ADMIN_USERS)} admins")
+
     # Initialize old SQLite database for existing functionality
     init_db()
-
+    database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://bankrot:bankrot_password@localhost:5432/bankrot")
+    # Если есть engine = ... → engine = create_async_engine(database_url)
+ 
     # Initialize new PostgreSQL database for cases module
     await init_pg_db()
     logger.info("PostgreSQL database initialized")
@@ -4304,7 +4005,15 @@ async def main():
         logger.info("=" * 60)
         logger.info("Bot starting in WEBHOOK mode")
         logger.info("=" * 60)
+
+        # Initialize web app with dependencies (breaks circular import)
+        from web import init_web_app
+        init_web_app(BOT_TOKEN, dp)
+        logger.info("Web app dependencies initialized")
+
         logger.info("Webhook updates handled by web.py (FastAPI)")
+        logger.info("Start FastAPI server separately: uvicorn web:app --host 0.0.0.0 --port 8000")
+
         # Keep process alive if someone runs bot.py directly by mistake
         while True:
             await asyncio.sleep(3600)
