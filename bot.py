@@ -1192,6 +1192,28 @@ async def cmd_start(message: Message) -> None:
 # Reply Keyboard Handlers
 # =========================
 
+@dp.message(StateFilter(None), F.text == "➕ Новое дело")
+async def reply_new_case(message: Message) -> None:
+    """
+    Handle '➕ Новое дело' reply keyboard button.
+
+    Shows cases menu with options to create new case or view existing cases.
+    StateFilter(None) ensures this only fires when user is NOT in FSM.
+
+    Args:
+        message: Message with reply keyboard button text
+    """
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        logger.warning(f"Unauthorized new case access attempt by user {uid}")
+        return
+
+    await message.answer(
+        "📋 Мои дела о банкротстве:",
+        reply_markup=cases_menu_ikb()
+    )
+
+
 @dp.message(StateFilter(None), F.text == "👤 Мой профиль")
 async def reply_my_profile(message: Message) -> None:
     """
