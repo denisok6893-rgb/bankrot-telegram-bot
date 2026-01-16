@@ -56,7 +56,7 @@ async def set_active_case_id(state: FSMContext, case_id: Optional[int]) -> None:
 
 # Command handlers
 @router.message(Command("newcase"))
-async def cmd_newcase(message: Message, state: FSMContext):
+async def cmd_newcase(message: Message, state: FSMContext) -> None:
     """Start creating a new case."""
     try:
         await message.answer(
@@ -71,7 +71,7 @@ async def cmd_newcase(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.debtor_name)
-async def process_debtor_name(message: Message, state: FSMContext):
+async def process_debtor_name(message: Message, state: FSMContext) -> None:
     """Process debtor name input."""
     try:
         debtor_name = message.text.strip()
@@ -90,7 +90,7 @@ async def process_debtor_name(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.debtor_inn)
-async def process_debtor_inn(message: Message, state: FSMContext):
+async def process_debtor_inn(message: Message, state: FSMContext) -> None:
     """Process debtor INN input."""
     try:
         inn = message.text.strip()
@@ -107,7 +107,7 @@ async def process_debtor_inn(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.case_number)
-async def process_case_number(message: Message, state: FSMContext):
+async def process_case_number(message: Message, state: FSMContext) -> None:
     """Process case number input."""
     try:
         case_num = message.text.strip()
@@ -124,7 +124,7 @@ async def process_case_number(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.court)
-async def process_court(message: Message, state: FSMContext):
+async def process_court(message: Message, state: FSMContext) -> None:
     """Process court input."""
     try:
         court_name = message.text.strip()
@@ -146,7 +146,7 @@ async def process_court(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.stage)
-async def process_stage(message: Message, state: FSMContext):
+async def process_stage(message: Message, state: FSMContext) -> None:
     """Process stage input."""
     try:
         stage_input = message.text.strip()
@@ -178,7 +178,7 @@ async def process_stage(message: Message, state: FSMContext):
 
 
 @router.message(NewCaseStates.manager_name)
-async def process_manager_name(message: Message, state: FSMContext):
+async def process_manager_name(message: Message, state: FSMContext) -> None:
     """Process manager name and create case."""
     try:
         manager = message.text.strip()
@@ -222,7 +222,7 @@ async def process_manager_name(message: Message, state: FSMContext):
 
 
 @router.message(Command("mycases"))
-async def cmd_mycases(message: Message):
+async def cmd_mycases(message: Message) -> None:
     """List all user's cases."""
     try:
         async with get_session() as session:
@@ -263,7 +263,7 @@ async def cmd_mycases(message: Message):
 
 
 @router.message(Command("case"))
-async def cmd_case(message: Message):
+async def cmd_case(message: Message) -> None:
     """View case details."""
     try:
         # Parse case ID from command
@@ -293,7 +293,7 @@ async def cmd_case(message: Message):
 
 
 @router.message(Command("setactive"))
-async def cmd_setactive(message: Message, state: FSMContext):
+async def cmd_setactive(message: Message, state: FSMContext) -> None:
     """Set active case."""
     try:
         # Parse case ID from command
@@ -328,7 +328,7 @@ async def cmd_setactive(message: Message, state: FSMContext):
 
 
 @router.message(Command("editcase"))
-async def cmd_editcase(message: Message, state: FSMContext):
+async def cmd_editcase(message: Message, state: FSMContext) -> None:
     """Start editing active case."""
     try:
         active_case_id = await get_active_case_id(state)
@@ -368,7 +368,7 @@ async def cmd_editcase(message: Message, state: FSMContext):
 
 
 @router.message(EditCaseStates.field)
-async def process_edit_field(message: Message, state: FSMContext):
+async def process_edit_field(message: Message, state: FSMContext) -> None:
     """Process field selection for editing."""
     try:
         field_input = message.text.strip()
@@ -398,7 +398,7 @@ async def process_edit_field(message: Message, state: FSMContext):
 
 
 @router.message(EditCaseStates.value)
-async def process_edit_value(message: Message, state: FSMContext):
+async def process_edit_value(message: Message, state: FSMContext) -> None:
     """Process new value and update case."""
     try:
         data = await state.get_data()
@@ -455,7 +455,7 @@ async def process_edit_value(message: Message, state: FSMContext):
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
     """Cancel current operation."""
     current_state = await state.get_state()
     if current_state is None:

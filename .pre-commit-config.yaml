@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - aiogram==3.*
+          - sqlalchemy[mypy]==2.*
+          - types-python-docx
+          - python-dotenv
+        args:
+          - --config-file=pyproject.toml
+          - --no-incremental
+        files: ^(bankrot_bot|handlers)/.*\.py$
+        exclude: ^(alembic|test_).*\.py$
