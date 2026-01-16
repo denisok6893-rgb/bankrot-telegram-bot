@@ -52,7 +52,7 @@ from bankrot_bot.services.docx_forms import (
 import aiohttp
 setup_logging()
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, BufferedInputFile, Message, InlineKeyboardMarkup
@@ -1003,12 +1003,46 @@ redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 storage = RedisStorage.from_url(redis_url)
 dp = Dispatcher(storage=storage)
 
-# Register cases router
+# =========================
+# ROUTER REGISTRATION - PRIORITY ORDER MATTERS!
+# =========================
+# Router order determines handler priority (first registered = highest priority).
+# This prevents message routing conflicts and ensures predictable behavior.
+#
+# PRIORITY ORDER (highest to lowest):
+# 1. COMMANDS - cases_handlers.router (Command handlers with explicit StateFilter)
+#    - /newcase, /mycases, /case, /setactive, /editcase, /cancel
+#    - These must run FIRST to catch commands before FSM or text handlers
+#
+# 2. FSM STATES - newcase_fsm.router (FSM handlers with explicit StateFilter)
+#    - F.text == "➕ Новое дело" with StateFilter(None) - only when NOT in FSM
+#    - NewCase FSM states with StateFilter - only when IN specific FSM state
+#    - StateFilter prevents conflicts with commands and other handlers
+#
+# 3. DIRECT DP HANDLERS - Callbacks and other handlers registered directly on dp
+#    - @dp.callback_query() - Callback query handlers
+#    - @dp.message(StateFilter(...)) - FSM handlers (AddParty, AddAsset, etc.)
+#    - These run LAST as fallback/catch-all handlers
+#
+# CRITICAL RULES:
+# ✅ ALL FSM state handlers MUST use StateFilter to prevent catching commands
+# ✅ Command handlers run first (registered routers before direct dp handlers)
+# ✅ Text filters (F.text) MUST have StateFilter or be very specific
+# ✅ Callback handlers can be registered anywhere (F.data is specific enough)
+#
+# DO NOT change router order without understanding priority implications!
+# =========================
+
+# 1. Commands (highest priority)
 dp.include_router(cases_handlers.router)
+
+# 2. FSM states with StateFilter
 # Register probability router (Phase 9)
 # dp.include_router(probability_handlers.router)
 # Register new case FSM router (Phase 12 fix)
 dp.include_router(newcase_fsm.router)
+
+# 3. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
@@ -2140,7 +2174,7 @@ async def case_new(call: CallbackQuery, state: FSMContext):
     await call.message.answer("Введи кодовое название дела (например: ИВАНОВ_2025).")
     await call.answer()
 
-@dp.message(CaseCreate.code_name)
+@dp.message(StateFilter(CaseCreate.code_name))
 async def case_step_code_name(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2155,7 +2189,7 @@ async def case_step_code_name(message: Message, state: FSMContext):
     await state.set_state(CaseCreate.case_number)
     await message.answer("Теперь введи номер дела (можно '-' если пока нет).")
 
-@dp.message(CaseCreate.case_number)
+@dp.message(StateFilter(CaseCreate.case_number))
 async def case_step_case_number(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2170,7 +2204,7 @@ async def case_step_case_number(message: Message, state: FSMContext):
     await state.set_state(CaseCreate.court)
     await message.answer("Укажи суд (например: АС г. Москвы) или '-'.")
 
-@dp.message(ProfileFill.full_name)
+@dp.message(StateFilter(ProfileFill.full_name))
 async def profile_step_full_name(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2185,7 +2219,7 @@ async def profile_step_full_name(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.role)
     await message.answer("Статус в деле (например: должник / представитель / кредитор).")
 
-@dp.message(ProfileFill.role)
+@dp.message(StateFilter(ProfileFill.role))
 async def profile_step_role(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2200,7 +2234,7 @@ async def profile_step_role(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.address)
     await message.answer("Адрес (для шапки документа). Можно '-' если не нужно.")
 
-@dp.message(ProfileFill.address)
+@dp.message(StateFilter(ProfileFill.address))
 async def profile_step_address(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2215,7 +2249,7 @@ async def profile_step_address(message: Message, state: FSMContext):
     await state.set_state(ProfileFill.phone)
     await message.answer("Телефон. Можно '-' если не нужно.")
 
-@dp.message(ProfileFill.phone)
+@dp.message(StateFilter(ProfileFill.phone))
 async def profile_step_phone(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2229,7 +2263,7 @@ async def profile_step_phone(message: Message, state: FSMContext):
     await state.update_data(phone=None if text == "-" else text)
     await state.set_state(ProfileFill.email)
     await message.answer("Email. Можно '-' если не нужно.")
-@dp.message(ProfileFill.email)
+@dp.message(StateFilter(ProfileFill.email))
 async def profile_step_email(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2259,7 +2293,7 @@ async def profile_step_email(message: Message, state: FSMContext):
         "Можешь открыть «👤 Мой профиль», чтобы проверить."
     )
 
-@dp.message(CaseCreate.court)
+@dp.message(StateFilter(CaseCreate.court))
 async def case_step_court(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2275,7 +2309,7 @@ async def case_step_court(message: Message, state: FSMContext):
     await message.answer("Укажи судью (ФИО) или '-'.")
 
 
-@dp.message(CaseCreate.judge)
+@dp.message(StateFilter(CaseCreate.judge))
 async def case_step_judge(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2291,7 +2325,7 @@ async def case_step_judge(message: Message, state: FSMContext):
     await message.answer("Укажи финансового управляющего или '-'.")
 
 
-@dp.message(CaseCreate.fin_manager)
+@dp.message(StateFilter(CaseCreate.fin_manager))
 async def case_step_fin_manager(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -2885,7 +2919,7 @@ def _normalize_card_input(field: str, text: str) -> tuple[bool, str | int | None
     return True, cleaned, None
 
 
-@dp.message(CaseCardFill.waiting_value)
+@dp.message(StateFilter(CaseCardFill.waiting_value))
 async def case_card_value_set(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3122,7 +3156,7 @@ async def creditors_text_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@dp.message(CreditorsFill.creditors_text)
+@dp.message(StateFilter(CreditorsFill.creditors_text))
 async def creditors_text_set(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3151,7 +3185,7 @@ async def creditors_text_set(message: Message, state: FSMContext):
     await send_creditors_menu(message, uid, cid)
 
 
-@dp.message(CreditorsFill.name)
+@dp.message(StateFilter(CreditorsFill.name))
 async def creditors_step_name(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     if not txt or txt == "-":
@@ -3166,7 +3200,7 @@ async def creditors_step_name(message: Message, state: FSMContext):
     await message.answer("ИНН (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.inn)
+@dp.message(StateFilter(CreditorsFill.inn))
 async def creditors_step_inn(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3179,7 +3213,7 @@ async def creditors_step_inn(message: Message, state: FSMContext):
     await message.answer("ОГРН (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.ogrn)
+@dp.message(StateFilter(CreditorsFill.ogrn))
 async def creditors_step_ogrn(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3192,7 +3226,7 @@ async def creditors_step_ogrn(message: Message, state: FSMContext):
     await message.answer("Адрес кредитора (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.address)
+@dp.message(StateFilter(CreditorsFill.address))
 async def creditors_step_address(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3205,7 +3239,7 @@ async def creditors_step_address(message: Message, state: FSMContext):
     await message.answer("Сумма долга (рубли) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.debt_rubles)
+@dp.message(StateFilter(CreditorsFill.debt_rubles))
 async def creditors_step_debt_rubles(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3222,7 +3256,7 @@ async def creditors_step_debt_rubles(message: Message, state: FSMContext):
     await message.answer("Сумма долга (копейки 0-99) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.debt_kopeks)
+@dp.message(StateFilter(CreditorsFill.debt_kopeks))
 async def creditors_step_debt_kopeks(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3247,7 +3281,7 @@ async def creditors_step_debt_kopeks(message: Message, state: FSMContext):
     await message.answer("Основание/комментарий (например: выписка ОКБ) (можно '-' чтобы пропустить).")
 
 
-@dp.message(CreditorsFill.note)
+@dp.message(StateFilter(CreditorsFill.note))
 async def creditors_step_note(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     data = await state.get_data()
@@ -3319,7 +3353,7 @@ async def case_edit_start(call: CallbackQuery, state: FSMContext):
     )
 
     await call.answer()
-@dp.message(CaseEdit.value)
+@dp.message(StateFilter(CaseEdit.value))
 async def case_edit_apply(message: Message, state: FSMContext):
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -3370,79 +3404,40 @@ async def case_edit_apply(message: Message, state: FSMContext):
     fake.message = message
     await case_edit_menu(fake, state)
 
-@dp.message(Command("case_new"))
-async def case_new_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Формат: /case_new КОДОВОЕ_НАЗВАНИЕ\nПример: /case_new Дело_Иванов_01")
-        return
-    cid = create_case(uid, parts[1])
-    await message.answer(f"✅ Дело создано. ID: {cid}")
-
-@dp.message(Command("cases"))
-async def cases_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    rows = list_cases(uid)
-    if not rows:
-        await message.answer("Пока нет дел. Создай: /case_new КОДОВОЕ_НАЗВАНИЕ")
-        return
-    lines = ["📋 Ваши дела (последние 20):"]
-    for (cid, code_name, case_number, stage, updated_at) in rows:
-        lines.append(f"#{cid} | {code_name} | № {case_number or '—'} | стадия: {stage or '—'} | upd: {updated_at}")
-    await message.answer("\n".join(lines))
-
-
-@dp.message(Command("case"))
-async def case_cmd(message: Message):
-    uid = message.from_user.id
-    if not is_allowed(uid):
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: /case ID\nПример: /case 3")
-        return
-    cid = int(parts[1])
-    row = get_case(uid, cid)
-    if not row:
-        await message.answer("Не найдено (или это не ваше дело).")
-        return
-    (cid, code_name, case_number, court, judge, fin_manager, stage, notes, created_at, updated_at) = row
-    text = (
-        f"📌 Дело #{cid}\n"
-        f"Код: {code_name}\n"
-        f"Номер дела: {case_number or '—'}\n"
-        f"Суд: {court or '—'}\n"
-        f"Судья: {judge or '—'}\n"
-        f"ФУ: {fin_manager or '—'}\n"
-        f"Стадия: {stage or '—'}\n"
-        f"Заметки: {notes or '—'}\n"
-        f"Создано: {created_at}\n"
-        f"Обновлено: {updated_at}\n"
-    )
-    await message.answer(text)
+# =========================
+# ROUTER CONFLICT FIX: Duplicate commands removed
+# =========================
+# These command handlers are now handled by bankrot_bot/handlers/cases.py
+# which uses the newer PostgreSQL implementation instead of SQLite.
+# Commands available in handlers/cases.py:
+#   - /newcase (was /case_new here)
+#   - /mycases (was /cases here)
+#   - /case <id> (same)
+#   - /setactive <id>
+#   - /editcase
+#   - /cancel
+# =========================
+# @dp.message(Command("case_new"))  # REMOVED - use /newcase from handlers/cases.py
+# @dp.message(Command("cases"))     # REMOVED - use /mycases from handlers/cases.py
+# @dp.message(Command("case"))      # REMOVED - use /case from handlers/cases.py
 
 
 # =========================
 # FSM handlers for AddParty and AddAsset (must be BEFORE catch-all!)
 # =========================
 
-@dp.message(AddParty.name)
+@dp.message(StateFilter(AddParty.name))
 async def process_party_name(message: Message, state: FSMContext):
-    """Обработать ввод имени кредитора/должника."""
+    """Обработать ввод имени кредитора/должника. ONLY active in AddParty.name state."""
     logger.info(f"User {message.from_user.id} entered party name in AddParty FSM")
     await state.update_data(name=message.text.strip())
     await message.answer("Введите сумму (например: 100000 или 100 000.50):")
     await state.set_state(AddParty.amount)
 
 
-@dp.message(AddParty.amount)
+@dp.message(StateFilter(AddParty.amount))
 async def process_party_amount(message: Message, state: FSMContext):
-    """Обработать ввод суммы."""
+    """Обработать ввод суммы. ONLY active in AddParty.amount state."""
     logger.info(f"User {message.from_user.id} entered party amount in AddParty FSM")
     # Normalize to JSON-safe string for Redis FSM storage
     amount_str = normalize_amount_to_string(message.text)
@@ -3456,9 +3451,9 @@ async def process_party_amount(message: Message, state: FSMContext):
     await state.set_state(AddParty.basis)
 
 
-@dp.message(AddParty.basis)
+@dp.message(StateFilter(AddParty.basis))
 async def process_party_basis(message: Message, state: FSMContext):
-    """Завершить добавление кредитора/должника."""
+    """Завершить добавление кредитора/должника. ONLY active in AddParty.basis state."""
     logger.info(f"User {message.from_user.id} completing AddParty FSM")
     basis = message.text.strip() if message.text.strip() != "-" else None
 
@@ -3482,27 +3477,27 @@ async def process_party_basis(message: Message, state: FSMContext):
     await state.clear()
 
 
-@dp.message(AddAsset.kind)
+@dp.message(StateFilter(AddAsset.kind))
 async def process_asset_kind(message: Message, state: FSMContext):
-    """Обработать ввод вида имущества."""
+    """Обработать ввод вида имущества. ONLY active in AddAsset.kind state."""
     logger.info(f"User {message.from_user.id} entered asset kind in AddAsset FSM")
     await state.update_data(kind=message.text.strip())
     await message.answer("Введите описание (адрес, марка, реквизиты и т.п.):")
     await state.set_state(AddAsset.description)
 
 
-@dp.message(AddAsset.description)
+@dp.message(StateFilter(AddAsset.description))
 async def process_asset_description(message: Message, state: FSMContext):
-    """Обработать ввод описания."""
+    """Обработать ввод описания. ONLY active in AddAsset.description state."""
     logger.info(f"User {message.from_user.id} entered asset description in AddAsset FSM")
     await state.update_data(description=message.text.strip())
     await message.answer("Введите стоимость (или '-' для пропуска):")
     await state.set_state(AddAsset.value)
 
 
-@dp.message(AddAsset.value)
+@dp.message(StateFilter(AddAsset.value))
 async def process_asset_value(message: Message, state: FSMContext):
-    """Завершить добавление имущества."""
+    """Завершить добавление имущества. ONLY active in AddAsset.value state."""
     logger.info(f"User {message.from_user.id} completing AddAsset FSM")
     value_text = message.text.strip()
 

@@ -1,6 +1,7 @@
 """FSM handlers for creating a new case via message input."""
 import logging
 from aiogram import Router, F
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -38,9 +39,13 @@ def skip_kb() -> ReplyKeyboardMarkup:
     )
 
 
-@router.message(F.text == "➕ Новое дело")
+@router.message(StateFilter(None), F.text == "➕ Новое дело")
 async def newcase_start_message(message: Message, state: FSMContext):
-    """Start new case creation from message (not callback)."""
+    """Start new case creation from message (not callback).
+
+    CRITICAL: StateFilter(None) ensures this ONLY fires when user is NOT in FSM.
+    This prevents conflict with command handlers and other FSM states.
+    """
     logger.info(f"User {message.from_user.id} started new case via message")
 
     await state.clear()
@@ -52,9 +57,9 @@ async def newcase_start_message(message: Message, state: FSMContext):
     )
 
 
-@router.message(NewCase.name)
+@router.message(StateFilter(NewCase.name))
 async def newcase_step_name(message: Message, state: FSMContext):
-    """Process name input."""
+    """Process name input. ONLY active when in NewCase.name state."""
     text = (message.text or "").strip()
     if not text:
         await message.answer("Пожалуйста, введите ФИО должника")
@@ -69,9 +74,9 @@ async def newcase_step_name(message: Message, state: FSMContext):
     )
 
 
-@router.message(NewCase.debt)
+@router.message(StateFilter(NewCase.debt))
 async def newcase_step_debt(message: Message, state: FSMContext):
-    """Process debt amount input."""
+    """Process debt amount input. ONLY active when in NewCase.debt state."""
     text = (message.text or "").strip()
     if not text:
         await message.answer("Пожалуйста, введите сумму задолженности")
@@ -97,9 +102,9 @@ async def newcase_step_debt(message: Message, state: FSMContext):
     )
 
 
-@router.message(NewCase.income)
+@router.message(StateFilter(NewCase.income))
 async def newcase_step_income(message: Message, state: FSMContext):
-    """Process income input."""
+    """Process income input. ONLY active when in NewCase.income state."""
     text = (message.text or "").strip()
 
     if text.lower() in ["пропустить", "skip", "-"]:
@@ -124,9 +129,9 @@ async def newcase_step_income(message: Message, state: FSMContext):
     )
 
 
-@router.message(NewCase.assets)
+@router.message(StateFilter(NewCase.assets))
 async def newcase_step_assets(message: Message, state: FSMContext):
-    """Process assets value input."""
+    """Process assets value input. ONLY active when in NewCase.assets state."""
     text = (message.text or "").strip()
 
     if text.lower() in ["пропустить", "skip", "-"]:
@@ -151,9 +156,9 @@ async def newcase_step_assets(message: Message, state: FSMContext):
     )
 
 
-@router.message(NewCase.dependents)
+@router.message(StateFilter(NewCase.dependents))
 async def newcase_step_dependents(message: Message, state: FSMContext):
-    """Process dependents count and finalize case creation."""
+    """Process dependents count and finalize case creation. ONLY active when in NewCase.dependents state."""
     text = (message.text or "").strip()
 
     if text.lower() in ["пропустить", "skip", "-"]:
