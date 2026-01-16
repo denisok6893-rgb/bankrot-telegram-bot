@@ -1042,9 +1042,7 @@ dp.include_router(cases_handlers.router)
 # Register new case FSM router (Phase 12 fix)
 dp.include_router(newcase_fsm.router)
 
-# 3. Callback handlers (refactored menu system)
-from handlers.callbacks import callback_router
-dp.include_router(callback_router)
+# 3. Callback handlers will be registered later after helper functions are defined
 
 # 4. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
 
@@ -3114,6 +3112,14 @@ async def send_creditors_menu(message_target, uid: int, cid: int) -> None:
     kb.adjust(1)
 
     await message_target.answer("\n".join(lines), reply_markup=kb.as_markup())
+
+
+# ============================================================================
+# REGISTER CALLBACK ROUTER (handlers/callbacks.py)
+# Must be done AFTER all helper functions are defined for circular import
+# ============================================================================
+from handlers.callbacks import callback_router
+dp.include_router(callback_router)
 
 
 @dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
