@@ -1043,8 +1043,8 @@ dp.include_router(cases_handlers.router)
 dp.include_router(newcase_fsm.router)
 
 # 3. Callback handlers (refactored menu system)
-from handlers.callbacks import callback_router
-dp.include_router(callback_router)
+# from handlers.callbacks import callback_router
+# dp.include_router(callback_router)
 
 # 4. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
 
