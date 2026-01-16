@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 from aiogram import Router, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
@@ -70,9 +70,9 @@ async def cmd_newcase(message: Message, state: FSMContext):
         await message.answer("Ошибка при создании дела. Попробуйте позже.")
 
 
-@router.message(NewCaseStates.debtor_name)
+@router.message(StateFilter(NewCaseStates.debtor_name))
 async def process_debtor_name(message: Message, state: FSMContext):
-    """Process debtor name input."""
+    """Process debtor name input. ONLY active in NewCaseStates.debtor_name state."""
     try:
         debtor_name = message.text.strip()
         if not debtor_name:
@@ -89,9 +89,9 @@ async def process_debtor_name(message: Message, state: FSMContext):
         await message.answer("Ошибка обработки данных. Попробуйте еще раз.")
 
 
-@router.message(NewCaseStates.debtor_inn)
+@router.message(StateFilter(NewCaseStates.debtor_inn))
 async def process_debtor_inn(message: Message, state: FSMContext):
-    """Process debtor INN input."""
+    """Process debtor INN input. ONLY active in NewCaseStates.debtor_inn state."""
     try:
         inn = message.text.strip()
         debtor_inn = None if inn == "-" else inn
@@ -106,9 +106,9 @@ async def process_debtor_inn(message: Message, state: FSMContext):
         await message.answer("Ошибка обработки данных. Попробуйте еще раз.")
 
 
-@router.message(NewCaseStates.case_number)
+@router.message(StateFilter(NewCaseStates.case_number))
 async def process_case_number(message: Message, state: FSMContext):
-    """Process case number input."""
+    """Process case number input. ONLY active in NewCaseStates.case_number state."""
     try:
         case_num = message.text.strip()
         case_number = None if case_num == "-" else case_num
@@ -123,9 +123,9 @@ async def process_case_number(message: Message, state: FSMContext):
         await message.answer("Ошибка обработки данных. Попробуйте еще раз.")
 
 
-@router.message(NewCaseStates.court)
+@router.message(StateFilter(NewCaseStates.court))
 async def process_court(message: Message, state: FSMContext):
-    """Process court input."""
+    """Process court input. ONLY active in NewCaseStates.court state."""
     try:
         court_name = message.text.strip()
         court = None if court_name == "-" else court_name
@@ -145,9 +145,9 @@ async def process_court(message: Message, state: FSMContext):
         await message.answer("Ошибка обработки данных. Попробуйте еще раз.")
 
 
-@router.message(NewCaseStates.stage)
+@router.message(StateFilter(NewCaseStates.stage))
 async def process_stage(message: Message, state: FSMContext):
-    """Process stage input."""
+    """Process stage input. ONLY active in NewCaseStates.stage state."""
     try:
         stage_input = message.text.strip()
         stage = None
@@ -177,9 +177,9 @@ async def process_stage(message: Message, state: FSMContext):
         await message.answer("Ошибка обработки данных. Попробуйте еще раз.")
 
 
-@router.message(NewCaseStates.manager_name)
+@router.message(StateFilter(NewCaseStates.manager_name))
 async def process_manager_name(message: Message, state: FSMContext):
-    """Process manager name and create case."""
+    """Process manager name and create case. ONLY active in NewCaseStates.manager_name state."""
     try:
         manager = message.text.strip()
         manager_name = None if manager == "-" else manager
@@ -367,9 +367,9 @@ async def cmd_editcase(message: Message, state: FSMContext):
         await message.answer("Ошибка при редактировании дела.")
 
 
-@router.message(EditCaseStates.field)
+@router.message(StateFilter(EditCaseStates.field))
 async def process_edit_field(message: Message, state: FSMContext):
-    """Process field selection for editing."""
+    """Process field selection for editing. ONLY active in EditCaseStates.field state."""
     try:
         field_input = message.text.strip()
 
@@ -397,9 +397,9 @@ async def process_edit_field(message: Message, state: FSMContext):
         await state.clear()
 
 
-@router.message(EditCaseStates.value)
+@router.message(StateFilter(EditCaseStates.value))
 async def process_edit_value(message: Message, state: FSMContext):
-    """Process new value and update case."""
+    """Process new value and update case. ONLY active in EditCaseStates.value state."""
     try:
         data = await state.get_data()
         field_name = data["edit_field"]
