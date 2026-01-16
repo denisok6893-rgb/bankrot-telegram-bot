@@ -12,10 +12,9 @@ Refactoring strategy:
 2. Extract FSM handlers for multi-step flows
 3. Extract command handlers
 4. Keep only initialization code in bot.py
-
-NOTE: Removed import of register_callbacks to break circular import chain:
-  bot.py → handlers → handlers.callbacks → bot (circular!)
-This was causing "Router is already attached" error.
 """
 
-__all__ = []
+# Import callback router to make it available
+from .callbacks import callback_router
+
+__all__ = ["callback_router"]
