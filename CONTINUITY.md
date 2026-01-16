@@ -167,3 +167,5 @@ psql -U bankrot -c "SELECT count(*) FROM practice"
 - Reply keyboard merged (#19), 28→2 branches
 - Deploy stable: healthy containers, updates 84ms
 - Next: feature/refactor-structure (services/states.py)
+
+2026-01-16 22:50 MSK: Reply keyboard #19 merged, branches cleanup 28→2 (docs-callbacks/repo-review left), deploy stable (healthy 10min)
