@@ -1,172 +1,32 @@
-# CONTINUITY — bankrot_bot
+# BANKROT BOT CONTINUITY 2026-01-17 ✅
 
-## Project Goal
+## PRODUCTION STATUS
+**Repo**: https://github.com/denisok6893-rgb/bankrot-telegram-bot
+**Main**: f8fa054 (4142стр bot.py stable)
+**Deploy**: docker-compose up -d --build
+**Telegram**: @Bankrot_law_bot polling active
 
-Создать промышленный Telegram-бот для юристов по банкротству, который:
-- закрывает их рутинные потребности
-- помогает вести карточки дел
-- генерирует процессуальные документы
-- анализирует судебную практику
-- формирует точные ответы на вопросы клиентов
-- активно использует ИИ для повышения качества работы
+**Menu**:
+- Мои дела ✅
+- +Новое дело ✅
+- Результаты ✅
+- Документы ✅
 
-Текущее направление — сформировать полноценный MVP с ядром функций и подготовить базу для интеллектуального RAG-анализа практики.
+## GIT WORKFLOW
+```
+git checkout main && git pull
+git checkout -b feature/new-feature
+git push -u origin feature/new-feature
+# GitHub PR → merge
+```
 
----
+## DEPLOY
+```
+docker-compose down --remove-orphans
+docker-compose up -d --build
+docker-compose logs bankrot_bot | tail -20
+```
 
-## Actual Repository State
-
-- Основная ветка: main
-- Последний HEAD-коммит: a088fa7
-- Ubuntu сервер: 24.04.3 LTS
-- Python окружение: виртуальное .venv
-- База данных для тестов: bankrot.db (SQLite временно)
-- Логи ведутся: journalctl + logs/bankrot-bot.log
-- Клавиатуры полностью перенесены в пакет bankrot_bot/keyboards
-- env-загрузка вынесена в bankrot_bot/config.py
-- настройки берутся через load_settings()
-
-Сервис работает постоянно через systemd unit:
-- bankrot-bot.service (active / running)
-
----
-
-## Completed Work
-
-На данный момент реализовано:
-
-### 1. Генерация документов
-
-- Основной документ: build_bankruptcy_petition_doc
-  - корректно подставляет 23 из 23 плейсхолдеров
-  - работает с динамическими кредиторами
-  - использует обход разрыва runs в Word
-  - формирует файл с уникальным именем
-  - отправляет его пользователю через Telegram
-  - компиляция и smoke-test стабильны
-
-- Функция ВКС удалена как неиспользуемая и экспериментальная
-
-### 2. Меню и интерфейс
-
-- Главные клавиатуры и меню полностью унифицированы
-- Применяются inline и reply-кнопки из одного пакета
-- Исправлены потоки редактирования дел и кнопки отмены
-- Пагинация архивных документов работает корректно
-
-### 3. Эксплуатационная часть
-
-- setup_logging реализован с rotating file
-- перезапуск сервиса отрабатывает стабильно
-- хранение секретов через .env
-
----
-
-## Current Limitations
-
-- Монолитный файл bot.py всё ещё содержит часть старой логики
-- Нет отдельного модуля загрузки и хранения судебной практики
-- Не реализован семантический поиск по актам
-- ИИ-ответы не всегда имеют опору на конкретную практику
-- Нет полноценной админ-панели для управления практикой и документами
-- Не настроен Kubernetes-деплой
-
----
-
-## Next Backlog
-
-Приоритетный план работ:
-
-### Этап 1 — Стабилизация ядра (1 неделя)
-
-- сделать docs:petition:bankruptcy_petition основным сквозным сценарием
-- вынести обработчики Telegram в routers/handlers
-- унифицировать вызовы LLM через отдельный сервис
-- формировать структуру tests/smoke для документов
-- отказаться от import * в рабочих частях
-
-Команды проверки:
-
-python -m py_compile bot.py
-systemctl restart bankrot-bot
-journalctl -u bankrot-bot.service -n 80 --no-pager
-
----
-
-### Этап 2 — Судебная практика v1 (2 недели)
-
-- разработать модуль practice_storage на PostgreSQL
-- сделать импорт практики из файлов/ссылок
-- классификация актов через LLM-API
-- выдача релевантных актов по ключевым словам
-
-Команды проверки:
-
-/opt/rss_digest_bot/app/main.py sync
-psql -U bankrot -c "SELECT count(*) FROM practice"
-
----
-
-### Этап 3 — Интеллектуальное ядро v2 (3–4 недели)
-
-- внедрить embeddings для актов
-- сделать семантический поиск
-- формировать ответы только через RAG
-- кэширование ИИ-ответов в Redis
-- модуль TTS для документов и практики
-
----
-
-### Этап 4 — Инфраструктура (2 недели)
-
-- полный Kubernetes-деплой
-- docker-compose → k8s manifests
-- Nginx ingress
-- горизонтальное масштабирование
-- безопасность и аудит
-
----
-
-## How to Work With Me
-
-Правила совместных сессий:
-
-- Любая задача делится на маленькие этапы
-- Сначала вы присылаете:
-  - код или лог ошибки
-  - ожидаемый результат
-- Я выдаю:
-  - патч не более чем на один шаг
-  - команды тестирования
-- После каждой сессии обновляется CONTINUITY.md и делается коммит в Git
-
----
-
-## Final Estimation
-
-При данном плане достижимые сроки:
-
-- Реально полезный MVP для юристов: 6–10 недель
-- Зрелая версия с анализом практики: около 3 месяцев
-- Продакшн-готовность и продажа: 3–4 месяца
-
----
-
-## Current Status
-
-На январь 2026:
-
-- компиляция проходит без ошибок
-- основной документ генерируется
-- клавиатуры и конфиги вынесены
-- сервис активен
-
-Следующий немедленный шаг — реализация Practice Module v1.
-
-## Update 2026-01-16
-- Reply keyboard merged (#19), 28→2 branches
-- Deploy stable: healthy containers, updates 84ms
-- Next: feature/refactor-structure (services/states.py)
-
-2026-01-16 22:50 MSK: Reply keyboard #19 merged, branches cleanup 28→2 (docs-callbacks/repo-review left), deploy stable (healthy 10min)
-2026-01-16 22:54 MSK: Verified no Claude auto-docs, rule: manual continuity after changes
+## NEXT
+- feature/db-backup
+- feature/rate-limit
