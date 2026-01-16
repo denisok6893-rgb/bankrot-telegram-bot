@@ -16,13 +16,94 @@ Total: 47 callbacks migrated (81% of ~58 total) 🎉 80% MILESTONE!
 Type Hints: Added comprehensive type hints to all 47 handlers for IDE support and mypy validation.
 """
 
+import logging
+from typing import Any
+from pathlib import Path
+
+# Aiogram imports
+from aiogram import Router, F
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message, FSInputFile, BufferedInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+# FSM States - import from bot.py where they are defined
+from bot import (
+    CaseEdit,
+    AddParty,
+    AddAsset,
+    CaseCardFill,
+    ProfileFill,
+    CreditorsFill,
+    CaseCreate,
+    # Helper functions
+    build_bankruptcy_petition_doc,
+    _selected_case_id,
+    _card_completion_status,
+    _format_creditor_line,
+    send_card_fill_menu,
+    send_creditors_menu,
+    # Constants
+    CASE_CARD_FIELD_META,
+    CASE_CARD_FIELDS,
+    GENERATED_DIR,
+)
+
+# Authorization
+from bankrot_bot.shared import is_allowed
+
+# Database functions
+from bankrot_bot.services.cases_db import (
+    list_cases,
+    get_case,
+    get_profile,
+    get_case_card,
+    update_case_fields,
+    update_case_meta,
+    upsert_case_card,
+    validate_case_card,
+)
+
+# Service functions for parties and assets
+from bankrot_bot.services.case_financials import (
+    get_case_parties,
+    delete_case_party,
+    get_case_assets,
+    calculate_assets_total,
+)
+
+# Document generation
+from bankrot_bot.services.docx_forms import (
+    render_creditors_list,
+    render_inventory,
+)
+
+# Keyboard functions
+from bankrot_bot.keyboards.menus import (
+    main_menu_kb,
+    home_ikb,
+    profile_ikb,
+    docs_menu_ikb,
+    cases_menu_ikb,
+    docs_catalog_ikb,
+    help_ikb,
+    help_item_ikb,
+    party_view_ikb,
+    case_assets_ikb,
+    asset_view_ikb,
+)
+
+logger = logging.getLogger(__name__)
+
+# Create router for callback handlers
+callback_router = Router(name="callbacks")
+
 # ============================================================================
 # CASE CALLBACKS - COMPLETE (9 callbacks total)
 # Phase 8-9
 # ============================================================================
 
 # Lines 2072-2166 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 2)
+@callback_router.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 2)
 async def case_edit_menu(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -125,7 +206,7 @@ async def case_edit_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 2347-2373 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:file:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:file:"))
 async def case_file_send(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -155,7 +236,7 @@ async def case_file_send(call: CallbackQuery) -> None:
 
 
 # Lines 2694-2735 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:open:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:open:"))
 async def case_open(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -200,7 +281,7 @@ async def case_open(call: CallbackQuery) -> None:
 
 
 # Lines 2738-2773 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:card:"))
 async def case_card_open(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -239,7 +320,7 @@ async def case_card_open(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3037-3048 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:card:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:card:"))
 async def case_card_menu(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -254,7 +335,7 @@ async def case_card_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3050-3085 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:card_edit:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:card_edit:"))
 async def case_card_edit(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -292,7 +373,7 @@ async def case_card_edit(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3127-3155 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:cardfield:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:cardfield:"))
 async def card_field_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -324,7 +405,7 @@ async def card_field_start(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3312-3324 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
+@callback_router.callback_query(lambda c: c.data.startswith("case:creditors:"))
 async def creditors_menu(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -340,7 +421,7 @@ async def creditors_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3591-3631 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 3)
+@callback_router.callback_query(lambda c: c.data.startswith("case:edit:") and c.data.count(":") == 3)
 async def case_edit_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -384,7 +465,7 @@ async def case_edit_start(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3632-3682 from bot.py (FSM handler for case_edit_start)
-@dp.message(CaseEdit.value)
+@callback_router.message(CaseEdit.value)
 async def case_edit_apply(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id
     if not is_allowed(uid):
@@ -442,7 +523,7 @@ async def case_edit_apply(message: Message, state: FSMContext) -> None:
 # ============================================================================
 
 # Lines 2198-2227 from bot.py
-@dp.callback_query(lambda c: c.data == "profile:menu")
+@callback_router.callback_query(lambda c: c.data == "profile:menu")
 async def profile_menu(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -475,7 +556,7 @@ async def profile_menu(call: CallbackQuery) -> None:
 
 
 # Lines 2228-2238 from bot.py
-@dp.callback_query(lambda c: c.data == "profile:edit")
+@callback_router.callback_query(lambda c: c.data == "profile:edit")
 async def profile_edit_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -494,7 +575,7 @@ async def profile_edit_start(call: CallbackQuery, state: FSMContext) -> None:
 # ============================================================================
 
 # Lines 1552-1560 from bot.py
-@dp.callback_query(F.data == "ai:placeholder")
+@callback_router.callback_query(F.data == "ai:placeholder")
 async def ai_placeholder(call: CallbackQuery) -> None:
     """Заглушка для ИИ-помощника."""
     uid = call.from_user.id
@@ -506,13 +587,13 @@ async def ai_placeholder(call: CallbackQuery) -> None:
 
 
 # Lines 1999-2001 from bot.py
-@dp.callback_query(F.data == "noop")
+@callback_router.callback_query(F.data == "noop")
 async def noop(call: CallbackQuery) -> None:
     await call.answer()
 
 
 # Lines 2385-2388 from bot.py
-@dp.callback_query(lambda c: c.data == "back:main")
+@callback_router.callback_query(lambda c: c.data == "back:main")
 async def back_to_main(call: CallbackQuery) -> None:
     await call.message.answer("Главное меню 👇", reply_markup=main_menu_kb())
     await call.answer()
@@ -524,7 +605,7 @@ async def back_to_main(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 2458-2468 from bot.py
-@dp.callback_query(lambda c: c.data == "case:new")
+@callback_router.callback_query(lambda c: c.data == "case:new")
 async def case_new(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -538,7 +619,7 @@ async def case_new(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 2657-2684 from bot.py
-@dp.callback_query(lambda c: c.data == "case:list")
+@callback_router.callback_query(lambda c: c.data == "case:list")
 async def case_list(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -569,7 +650,7 @@ async def case_list(call: CallbackQuery) -> None:
 
 
 # Lines 2686-2692 from bot.py
-@dp.callback_query(lambda c: c.data == "back:cases")
+@callback_router.callback_query(lambda c: c.data == "back:cases")
 async def back_to_cases(call: CallbackQuery) -> None:
     await call.message.answer(
         "Раздел «Дела». Выбери действие:",
@@ -584,7 +665,7 @@ async def back_to_cases(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 2376-2380 from bot.py
-@dp.callback_query(lambda c: c.data == "docs:back_menu")
+@callback_router.callback_query(lambda c: c.data == "docs:back_menu")
 async def docs_back_menu(call: CallbackQuery, state: FSMContext) -> None:
     cid = await _selected_case_id(state)
     await call.message.answer("Документы: выбери действие 👇", reply_markup=docs_menu_ikb(cid))
@@ -592,7 +673,7 @@ async def docs_back_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 2241-2266 from bot.py
-@dp.callback_query(lambda c: c.data == "docs:choose_case")
+@callback_router.callback_query(lambda c: c.data == "docs:choose_case")
 async def docs_choose_case(call: CallbackQuery) -> None:
     """Показывает список дел для выбора дела для документов."""
     uid = call.from_user.id
@@ -626,7 +707,7 @@ async def docs_choose_case(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 2269-2288 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("docs:case:"))
+@callback_router.callback_query(lambda c: c.data.startswith("docs:case:"))
 async def docs_case_selected(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -649,7 +730,7 @@ async def docs_case_selected(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 2290-2345 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("docs:petition:"))
+@callback_router.callback_query(lambda c: c.data.startswith("docs:petition:"))
 async def docs_petition(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -708,7 +789,7 @@ async def docs_petition(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3086-3125 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("card:fill:"))
+@callback_router.callback_query(lambda c: c.data.startswith("card:fill:"))
 async def card_fill_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -751,7 +832,7 @@ async def card_fill_start(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3327-3339 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("creditors:add:"))
+@callback_router.callback_query(lambda c: c.data.startswith("creditors:add:"))
 async def creditors_add_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -767,7 +848,7 @@ async def creditors_add_start(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3342-3366 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("creditors:del:"))
+@callback_router.callback_query(lambda c: c.data.startswith("creditors:del:"))
 async def creditors_delete_menu(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -795,7 +876,7 @@ async def creditors_delete_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3369-3396 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("creditors:delone:"))
+@callback_router.callback_query(lambda c: c.data.startswith("creditors:delone:"))
 async def creditors_delete_one(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -826,7 +907,7 @@ async def creditors_delete_one(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3399-3412 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("creditors:text_clear:"))
+@callback_router.callback_query(lambda c: c.data.startswith("creditors:text_clear:"))
 async def creditors_text_clear(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -843,7 +924,7 @@ async def creditors_text_clear(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3415-3432 from bot.py
-@dp.callback_query(lambda c: c.data.startswith("creditors:text:"))
+@callback_router.callback_query(lambda c: c.data.startswith("creditors:text:"))
 async def creditors_text_start(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -869,7 +950,7 @@ async def creditors_text_start(call: CallbackQuery, state: FSMContext) -> None:
 # ============================================================================
 
 # Lines 1472-1479 from bot.py
-@dp.callback_query(F.data == "menu:home")
+@callback_router.callback_query(F.data == "menu:home")
 async def menu_home(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -880,7 +961,7 @@ async def menu_home(call: CallbackQuery) -> None:
 
 
 # Lines 1482-1489 from bot.py
-@dp.callback_query(F.data == "menu:profile")
+@callback_router.callback_query(F.data == "menu:profile")
 async def menu_profile(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -891,7 +972,7 @@ async def menu_profile(call: CallbackQuery) -> None:
 
 
 # Lines 1492-1505 from bot.py
-@dp.callback_query(F.data == "menu:docs")
+@callback_router.callback_query(F.data == "menu:docs")
 async def menu_docs(call: CallbackQuery) -> None:
     """Публичный каталог документов - доступен всем."""
     uid = call.from_user.id
@@ -908,7 +989,7 @@ async def menu_docs(call: CallbackQuery) -> None:
 
 
 # Lines 1508-1520 from bot.py
-@dp.callback_query(F.data == "menu:help")
+@callback_router.callback_query(F.data == "menu:help")
 async def menu_help(call: CallbackQuery) -> None:
     """Подменю раздела Помощь."""
     uid = call.from_user.id
@@ -929,7 +1010,7 @@ async def menu_help(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 3935-3952 from bot.py
-@dp.callback_query(F.data.startswith("party:add_creditor:") | F.data.startswith("party:add_debtor:"))
+@callback_router.callback_query(F.data.startswith("party:add_creditor:") | F.data.startswith("party:add_debtor:"))
 async def start_add_party(call: CallbackQuery, state: FSMContext) -> None:
     """Начать добавление кредитора/должника."""
     uid = call.from_user.id
@@ -950,7 +1031,7 @@ async def start_add_party(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 3955-3988 from bot.py
-@dp.callback_query(F.data.startswith("party:view:"))
+@callback_router.callback_query(F.data.startswith("party:view:"))
 async def view_party(call: CallbackQuery) -> None:
     """Просмотр кредитора/должника."""
     uid = call.from_user.id
@@ -987,7 +1068,7 @@ async def view_party(call: CallbackQuery) -> None:
 
 
 # Lines 3991-4012 from bot.py
-@dp.callback_query(F.data.startswith("party:delete:"))
+@callback_router.callback_query(F.data.startswith("party:delete:"))
 async def delete_party(call: CallbackQuery) -> None:
     """Удалить кредитора/должника."""
     uid = call.from_user.id
@@ -1012,7 +1093,7 @@ async def delete_party(call: CallbackQuery) -> None:
 
 
 # Lines 4017-4040 from bot.py
-@dp.callback_query(F.data.startswith("case:assets:"))
+@callback_router.callback_query(F.data.startswith("case:assets:"))
 async def show_case_assets(call: CallbackQuery) -> None:
     """Показать опись имущества по делу."""
     uid = call.from_user.id
@@ -1039,7 +1120,7 @@ async def show_case_assets(call: CallbackQuery) -> None:
 
 
 # Lines 4043-4056 from bot.py
-@dp.callback_query(F.data.startswith("asset:add:"))
+@callback_router.callback_query(F.data.startswith("asset:add:"))
 async def start_add_asset(call: CallbackQuery, state: FSMContext) -> None:
     """Начать добавление имущества."""
     uid = call.from_user.id
@@ -1056,7 +1137,7 @@ async def start_add_asset(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Lines 4059-4092 from bot.py
-@dp.callback_query(F.data.startswith("asset:view:"))
+@callback_router.callback_query(F.data.startswith("asset:view:"))
 async def view_asset(call: CallbackQuery) -> None:
     """Просмотр имущества."""
     uid = call.from_user.id
@@ -1093,7 +1174,7 @@ async def view_asset(call: CallbackQuery) -> None:
 
 
 # Lines 4095-4116 from bot.py
-@dp.callback_query(F.data.startswith("asset:delete:"))
+@callback_router.callback_query(F.data.startswith("asset:delete:"))
 async def delete_asset(call: CallbackQuery) -> None:
     """Удалить имущество."""
     uid = call.from_user.id
@@ -1123,7 +1204,7 @@ async def delete_asset(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 4121-4149 from bot.py
-@dp.callback_query(F.data.startswith("party:generate_doc:"))
+@callback_router.callback_query(F.data.startswith("party:generate_doc:"))
 async def generate_creditors_doc(call: CallbackQuery) -> None:
     """Генерация списка кредиторов и должников в DOCX."""
     uid = call.from_user.id
@@ -1155,7 +1236,7 @@ async def generate_creditors_doc(call: CallbackQuery) -> None:
 
 
 # Lines 4152-4180 from bot.py
-@dp.callback_query(F.data.startswith("asset:generate_doc:"))
+@callback_router.callback_query(F.data.startswith("asset:generate_doc:"))
 async def generate_inventory_doc(call: CallbackQuery) -> None:
     """Генерация описи имущества в DOCX."""
     uid = call.from_user.id
@@ -1187,7 +1268,7 @@ async def generate_inventory_doc(call: CallbackQuery) -> None:
 
 
 # Lines 1860-1918 from bot.py
-@dp.callback_query(F.data.startswith("case:archive:"))
+@callback_router.callback_query(F.data.startswith("case:archive:"))
 async def case_archive(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -1249,7 +1330,7 @@ async def case_archive(call: CallbackQuery) -> None:
 
 
 # Lines 1921-1962 from bot.py
-@dp.callback_query(F.data.startswith("case:fileidx:"))
+@callback_router.callback_query(F.data.startswith("case:fileidx:"))
 async def case_file_send_by_index(call: CallbackQuery) -> None:
     uid = call.from_user.id
     if not is_allowed(uid):
@@ -1299,7 +1380,7 @@ async def case_file_send_by_index(call: CallbackQuery) -> None:
 # ============================================================================
 
 # Lines 1565-1590 from bot.py
-@dp.callback_query(F.data == "help:howto")
+@callback_router.callback_query(F.data == "help:howto")
 async def help_howto(call: CallbackQuery) -> None:
     """Как пользоваться ботом."""
     uid = call.from_user.id
@@ -1328,7 +1409,7 @@ async def help_howto(call: CallbackQuery) -> None:
 
 
 # Lines 1593-1616 from bot.py
-@dp.callback_query(F.data == "help:cases")
+@callback_router.callback_query(F.data == "help:cases")
 async def help_cases(call: CallbackQuery) -> None:
     """Что такое карточки дел."""
     uid = call.from_user.id
@@ -1355,7 +1436,7 @@ async def help_cases(call: CallbackQuery) -> None:
 
 
 # Lines 1619-1642 from bot.py
-@dp.callback_query(F.data == "help:docs")
+@callback_router.callback_query(F.data == "help:docs")
 async def help_docs(call: CallbackQuery) -> None:
     """О документах."""
     uid = call.from_user.id
@@ -1382,7 +1463,7 @@ async def help_docs(call: CallbackQuery) -> None:
 
 
 # Lines 1645-1666 from bot.py
-@dp.callback_query(F.data == "help:contacts")
+@callback_router.callback_query(F.data == "help:contacts")
 async def help_contacts(call: CallbackQuery) -> None:
     """Контакты и обратная связь."""
     uid = call.from_user.id
@@ -1407,7 +1488,7 @@ async def help_contacts(call: CallbackQuery) -> None:
 
 
 # Lines 1669-1692 from bot.py
-@dp.callback_query(F.data == "help:about")
+@callback_router.callback_query(F.data == "help:about")
 async def help_about(call: CallbackQuery) -> None:
     """О боте."""
     uid = call.from_user.id
