@@ -55,7 +55,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, BufferedInputFile, Message, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, FSInputFile, BufferedInputFile, Message, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from docx import Document
 from bankrot_bot.config import load_settings
@@ -1162,8 +1162,8 @@ async def cmd_start(message: Message) -> None:
     """
     Handle /start command.
 
-    Shows welcome message with main menu to authorized users.
-    Refactored to use InlineKeyboardMarkup only.
+    Shows welcome message with main menu (both reply keyboard and inline keyboard).
+    Reply keyboard provides persistent bottom navigation buttons.
 
     Args:
         message: Incoming /start command message
@@ -1174,7 +1174,7 @@ async def cmd_start(message: Message) -> None:
         return
     cancel_flow(uid)
 
-    # Import refactored main menu
+    # Import refactored main menu (inline) and reply keyboard
     from keyboards import main_menu
 
     text = (
@@ -1183,7 +1183,80 @@ async def cmd_start(message: Message) -> None:
         "Выберите раздел для работы:"
     )
 
-    await message.answer(text, reply_markup=main_menu())
+    # Send with reply keyboard (bottom buttons) for persistent navigation
+    await message.answer(text, reply_markup=main_menu_kb())
+
+    # Optionally send inline keyboard for additional options
+    # await message.answer("Или выберите из меню:", reply_markup=main_menu())
+
+
+# =========================
+# Reply Keyboard Handlers
+# =========================
+
+@dp.message(StateFilter(None), F.text == "👤 Мой профиль")
+async def reply_my_profile(message: Message) -> None:
+    """
+    Handle '👤 Мой профиль' reply keyboard button.
+
+    Shows user profile with inline keyboard options.
+    StateFilter(None) ensures this only fires when user is NOT in FSM.
+
+    Args:
+        message: Message with reply keyboard button text
+    """
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        logger.warning(f"Unauthorized profile access attempt by user {uid}")
+        return
+
+    await message.answer("👤 Мой профиль:", reply_markup=profile_ikb())
+
+
+@dp.message(StateFilter(None), F.text == "📄 Документы")
+async def reply_documents(message: Message) -> None:
+    """
+    Handle '📄 Документы' reply keyboard button.
+
+    Shows public documents catalog with inline keyboard options.
+    StateFilter(None) ensures this only fires when user is NOT in FSM.
+
+    Args:
+        message: Message with reply keyboard button text
+    """
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        logger.warning(f"Unauthorized documents access attempt by user {uid}")
+        return
+
+    await message.answer(
+        "📄 Публичный каталог документов\n\n"
+        "Выберите категорию:",
+        reply_markup=docs_catalog_ikb()
+    )
+
+
+@dp.message(StateFilter(None), F.text == "❓ Помощь")
+async def reply_help(message: Message) -> None:
+    """
+    Handle '❓ Помощь' reply keyboard button.
+
+    Shows help menu with inline keyboard options.
+    StateFilter(None) ensures this only fires when user is NOT in FSM.
+
+    Args:
+        message: Message with reply keyboard button text
+    """
+    uid = message.from_user.id
+    if not is_allowed(uid):
+        logger.warning(f"Unauthorized help access attempt by user {uid}")
+        return
+
+    await message.answer(
+        "❓ Помощь\n\n"
+        "Выберите тему:",
+        reply_markup=help_ikb()
+    )
 
 
 @dp.callback_query(F.data == "menu:home")
