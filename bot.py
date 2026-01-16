@@ -1042,7 +1042,11 @@ dp.include_router(cases_handlers.router)
 # Register new case FSM router (Phase 12 fix)
 dp.include_router(newcase_fsm.router)
 
-# 3. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
+# 3. Callback handlers (refactored menu system)
+from handlers.callbacks import callback_router
+dp.include_router(callback_router)
+
+# 4. Direct dp handlers (callbacks, FSM, etc.) registered below have lowest priority
 
 USER_FLOW: Dict[int, Dict[str, Any]] = {}
 LAST_RESULT: Dict[int, str] = {}
@@ -1159,6 +1163,7 @@ async def cmd_start(message: Message) -> None:
     Handle /start command.
 
     Shows welcome message with main menu to authorized users.
+    Refactored to use InlineKeyboardMarkup only.
 
     Args:
         message: Incoming /start command message
@@ -1169,11 +1174,16 @@ async def cmd_start(message: Message) -> None:
         return
     cancel_flow(uid)
 
-    await message.answer(
-        "Добро пожаловать! Выберите раздел из меню ниже:",
-        reply_markup=main_menu_kb(),
+    # Import refactored main menu
+    from keyboards import main_menu
+
+    text = (
+        "🏠 Добро пожаловать!\n\n"
+        "Бот-помощник по банкротству физических лиц.\n\n"
+        "Выберите раздел для работы:"
     )
-    await message.answer("Главное меню:", reply_markup=home_ikb())
+
+    await message.answer(text, reply_markup=main_menu())
 
 
 @dp.callback_query(F.data == "menu:home")
