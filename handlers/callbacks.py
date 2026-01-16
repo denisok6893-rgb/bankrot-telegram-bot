@@ -1,213 +1,485 @@
 """
-Callback Query Handlers
+Refactored Callback Query Handlers
 
-This module contains all callback query handlers extracted from bot.py
-Organized by functional categories for better maintainability.
+This module contains all callback query handlers for the bankrot-telegram-bot.
+All handlers use edit_message_text to avoid chat spam.
+All keyboards use InlineKeyboardMarkup with consistent "← Back" navigation.
 
-Total handlers to extract: ~58 from bot.py
+Callback Structure:
+- main: Main menu
+- profile: Profile menu
+- profile_data, profile_edit, profile_stats: Profile actions
+- my_cases: My cases list
+- new_case: Start new case FSM
+- case_open:<id>: Open case card
+- case_parties:<id>, case_assets:<id>, case_docs:<id>: Case sections
+- help, help_*: Help menu items
+- docs_catalog, docs_cat:*, docs_item:*: Documents catalog
 """
+
+import logging
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 
-# Import keyboard builders from bot.py's keyboards module
-from bankrot_bot.keyboards.menus import (
-    home_ikb,
-    profile_ikb,
-    docs_catalog_ikb,
-    help_ikb,
-    help_item_ikb,
-    my_cases_ikb,
+# Import keyboards from the new refactored module
+from keyboards import (
+    main_menu,
+    profile_menu,
+    my_cases_menu,
+    case_card_menu,
+    case_parties_menu,
+    case_assets_menu,
+    case_docs_menu,
+    docs_catalog_menu,
+    docs_category_menu,
+    docs_item_menu,
+    help_menu,
+    help_item_menu,
+    back_to_main,
 )
 
-# Import helper functions (circular import fix)
+# Import helper functions
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from bankrot_bot.shared import is_allowed  # ✓ Breaks circular import
-from bankrot_bot.services.cases_db import list_cases  # ✓ Breaks circular import with bot.py
 
+from bankrot_bot.shared import is_allowed
+from bankrot_bot.services.cases_db import list_cases, get_case
 
-# Create router for callback handlers
+logger = logging.getLogger(__name__)
+
+# Create router with priority
 callback_router = Router(name="callbacks")
 
 
 # ============================================================================
-# MENU CALLBACKS (menu:*)
+# UTILITY FUNCTIONS
 # ============================================================================
 
-@callback_router.callback_query(F.data == "menu:home")
-async def menu_home(call: CallbackQuery):
-    """Navigate to home/main menu"""
+async def safe_edit_message(
+    call: CallbackQuery,
+    text: str,
+    reply_markup=None,
+    parse_mode: Optional[str] = None
+) -> bool:
+    """
+    Safely edit message text, handling exceptions.
+
+    Returns:
+        True if edit was successful, False otherwise
+    """
+    try:
+        await call.message.edit_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+        return True
+    except TelegramBadRequest as e:
+        # Message is not modified (same content)
+        if "message is not modified" in str(e).lower():
+            logger.debug(f"Message not modified for user {call.from_user.id}")
+            return True
+        # Message to edit not found
+        elif "message to edit not found" in str(e).lower():
+            logger.warning(f"Message not found for user {call.from_user.id}")
+            await call.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return True
+        else:
+            logger.error(f"Failed to edit message: {e}")
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error editing message: {e}")
+        return False
+
+
+# ============================================================================
+# MAIN MENU CALLBACK
+# ============================================================================
+
+@callback_router.callback_query(F.data == "main")
+async def handle_main_menu(call: CallbackQuery):
+    """
+    Navigate to main menu.
+    This is the central hub for all "← Back" buttons.
+    """
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
-    await call.message.answer("Главное меню:", reply_markup=home_ikb())
-    await call.answer()
 
-
-@callback_router.callback_query(F.data == "menu:profile")
-async def menu_profile(call: CallbackQuery):
-    """Show user profile"""
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-    await call.message.answer("👤 Мой профиль:", reply_markup=profile_ikb())
-    await call.answer()
-
-
-@callback_router.callback_query(F.data == "menu:docs")
-async def menu_docs(call: CallbackQuery):
-    """Публичный каталог документов - доступен всем."""
-    uid = call.from_user.id
-    if not is_allowed(uid):
-        await call.answer()
-        return
-    await call.message.answer(
-        "📄 Публичный каталог документов\n\n"
-        "Здесь вы найдете шаблоны и образцы документов для банкротства.\n"
-        "Выберите категорию:",
-        reply_markup=docs_catalog_ikb()
+    text = (
+        "🏠 Главное меню\n\n"
+        "Выберите раздел для работы:"
     )
+
+    await safe_edit_message(call, text, reply_markup=main_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "menu:help")
-async def menu_help(call: CallbackQuery):
-    """Подменю раздела Помощь."""
+# ============================================================================
+# PROFILE CALLBACKS
+# ============================================================================
+
+@callback_router.callback_query(F.data == "profile")
+async def handle_profile(call: CallbackQuery):
+    """Show profile menu."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
-    await call.message.answer(
-        "❓ Раздел помощи\n\n"
-        "Выберите интересующую тему:",
-        reply_markup=help_ikb(),
+
+    text = (
+        "👤 Мой профиль\n\n"
+        "Управление вашим профилем и персональными данными."
     )
+
+    await safe_edit_message(call, text, reply_markup=profile_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "menu:my_cases")
-async def menu_my_cases(call: CallbackQuery, state: FSMContext):
-    """Раздел «Мои дела» - интеграция с модулем cases."""
+@callback_router.callback_query(F.data == "profile_data")
+async def handle_profile_data(call: CallbackQuery):
+    """Show profile data."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
+    # TODO: Fetch real profile data from database
+    text = (
+        "📋 Данные профиля\n\n"
+        f"Telegram ID: {uid}\n"
+        f"Имя: {call.from_user.full_name}\n"
+        f"Username: @{call.from_user.username or 'не указан'}\n\n"
+        "Для изменения данных используйте кнопку 'Редактировать'."
+    )
+
+    await safe_edit_message(call, text, reply_markup=profile_menu())
+    await call.answer()
+
+
+@callback_router.callback_query(F.data == "profile_edit")
+async def handle_profile_edit(call: CallbackQuery):
+    """Edit profile (placeholder)."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    text = (
+        "✏️ Редактирование профиля\n\n"
+        "Эта функция находится в разработке.\n"
+        "Скоро вы сможете редактировать свои данные."
+    )
+
+    await safe_edit_message(call, text, reply_markup=profile_menu())
+    await call.answer()
+
+
+@callback_router.callback_query(F.data == "profile_stats")
+async def handle_profile_stats(call: CallbackQuery):
+    """Show profile statistics."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    # TODO: Calculate real statistics
+    cases = list_cases(uid)
+    cases_count = len(cases)
+
+    text = (
+        "📊 Статистика\n\n"
+        f"Всего дел: {cases_count}\n"
+        f"Активных дел: {cases_count}\n"
+        f"Завершенных дел: 0\n\n"
+        "Подробная статистика появится в следующей версии."
+    )
+
+    await safe_edit_message(call, text, reply_markup=profile_menu())
+    await call.answer()
+
+
+# ============================================================================
+# MY CASES CALLBACKS
+# ============================================================================
+
+@callback_router.callback_query(F.data == "my_cases")
+async def handle_my_cases(call: CallbackQuery, state: FSMContext):
+    """Show my cases list."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    # Fetch cases from database
     rows = list_cases(uid)
 
-    # Получить активное дело из state (если есть)
+    # Get active case from state
     data = await state.get_data()
     active_case_id = data.get("active_case_id")
 
-    text = "📂 Мои дела\n\n"
-    if rows:
-        text += f"У вас {len(rows)} дел(а/о).\n"
+    # Format cases for keyboard
+    cases = [(row[0], row[1] or f"Дело #{row[0]}") for row in rows]
+
+    text = "📋 Мои дела\n\n"
+    if cases:
+        text += f"У вас {len(cases)} дел(а/о).\n"
         if active_case_id:
-            text += f"Активное дело: #{active_case_id}\n"
+            text += f"Активное дело: #{active_case_id}\n\n"
         text += "Выберите дело для работы или создайте новое."
     else:
-        text += "У вас пока нет дел. Создайте первое дело для работы."
+        text += "У вас пока нет дел.\nНажмите '➕ Новое дело' для создания первого дела."
 
-    await call.message.answer(text, reply_markup=my_cases_ikb(rows, active_case_id))
+    await safe_edit_message(call, text, reply_markup=my_cases_menu(cases, active_case_id))
+    await call.answer()
+
+
+@callback_router.callback_query(F.data.startswith("case_open:"))
+async def handle_case_open(call: CallbackQuery, state: FSMContext):
+    """Open case card."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    try:
+        case_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        await call.answer("Ошибка: неверный ID дела", show_alert=True)
+        return
+
+    # Fetch case from database
+    case = get_case(case_id)
+    if not case or case.get("user_id") != uid:
+        await call.answer("Дело не найдено", show_alert=True)
+        return
+
+    # Set as active case
+    await state.update_data(active_case_id=case_id)
+
+    # Format case info
+    case_title = case.get("code_name") or f"Дело #{case_id}"
+    case_number = case.get("case_number") or "не указан"
+    court = case.get("court") or "не указан"
+
+    text = (
+        f"📁 {case_title}\n\n"
+        f"Номер дела: {case_number}\n"
+        f"Суд: {court}\n\n"
+        "Выберите действие:"
+    )
+
+    await safe_edit_message(call, text, reply_markup=case_card_menu(case_id))
     await call.answer()
 
 
 # ============================================================================
-# HELP CALLBACKS (help:*)
+# CASE SECTIONS CALLBACKS
 # ============================================================================
 
-@callback_router.callback_query(F.data == "help:howto")
-async def help_howto(call: CallbackQuery):
-    """Как пользоваться ботом."""
+@callback_router.callback_query(F.data.startswith("case_parties:"))
+async def handle_case_parties(call: CallbackQuery):
+    """Show case parties (creditors/debtors)."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    try:
+        case_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        await call.answer("Ошибка: неверный ID дела", show_alert=True)
+        return
+
+    # TODO: Fetch parties from database
+    text = (
+        f"💰 Кредиторы/должники\n\n"
+        f"Дело #{case_id}\n\n"
+        "Здесь будет список кредиторов и должников.\n"
+        "Функция в разработке."
+    )
+
+    await safe_edit_message(call, text, reply_markup=case_parties_menu(case_id, [], 0, 0))
+    await call.answer()
+
+
+@callback_router.callback_query(F.data.startswith("case_assets:"))
+async def handle_case_assets(call: CallbackQuery):
+    """Show case assets (inventory)."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    try:
+        case_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        await call.answer("Ошибка: неверный ID дела", show_alert=True)
+        return
+
+    # TODO: Fetch assets from database
+    text = (
+        f"🏠 Опись имущества\n\n"
+        f"Дело #{case_id}\n\n"
+        "Здесь будет список имущества.\n"
+        "Функция в разработке."
+    )
+
+    await safe_edit_message(call, text, reply_markup=case_assets_menu(case_id, [], 0.0))
+    await call.answer()
+
+
+@callback_router.callback_query(F.data.startswith("case_docs:"))
+async def handle_case_docs(call: CallbackQuery):
+    """Show case documents."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    try:
+        case_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        await call.answer("Ошибка: неверный ID дела", show_alert=True)
+        return
+
+    text = (
+        f"📎 Документы по делу\n\n"
+        f"Дело #{case_id}\n\n"
+        "Генерация и управление документами."
+    )
+
+    await safe_edit_message(call, text, reply_markup=case_docs_menu(case_id))
+    await call.answer()
+
+
+@callback_router.callback_query(F.data.startswith("case_edit:"))
+async def handle_case_edit(call: CallbackQuery):
+    """Edit case (placeholder)."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    await call.answer("Редактирование дела - функция в разработке", show_alert=True)
+
+
+@callback_router.callback_query(F.data.startswith("case_help:"))
+async def handle_case_help(call: CallbackQuery):
+    """Case AI help (placeholder)."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    await call.answer("ИИ-помощник - функция в разработке", show_alert=True)
+
+
+# ============================================================================
+# HELP MENU CALLBACKS
+# ============================================================================
+
+@callback_router.callback_query(F.data == "help")
+async def handle_help(call: CallbackQuery):
+    """Show help menu."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    text = (
+        "❓ Раздел помощи\n\n"
+        "Выберите интересующую тему:"
+    )
+
+    await safe_edit_message(call, text, reply_markup=help_menu())
+    await call.answer()
+
+
+@callback_router.callback_query(F.data == "help_howto")
+async def handle_help_howto(call: CallbackQuery):
+    """How to use the bot."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
     text = (
         "📖 Как пользоваться ботом\n\n"
         "1️⃣ Главное меню\n"
-        "В главном меню три раздела:\n"
-        "• Мои дела - управление делами о банкротстве\n"
-        "• Документы - публичный каталог образцов\n"
-        "• Помощь - справочная информация\n\n"
+        "• Мой профиль - управление данными\n"
+        "• Новое дело - создать дело о банкротстве\n"
+        "• Мои дела - список ваших дел\n\n"
         "2️⃣ Работа с делами\n"
         "• Создайте карточку дела\n"
-        "• Заполните данные должника и кредиторов\n"
-        "• Генерируйте документы по делу\n\n"
+        "• Заполните данные кредиторов\n"
+        "• Генерируйте документы\n\n"
         "3️⃣ Навигация\n"
-        "Используйте кнопки для перемещения между разделами.\n"
-        "Кнопка 🏠 всегда возвращает в главное меню."
+        "Кнопка '← Назад' всегда возвращает в главное меню."
     )
 
-    await call.message.answer(text, reply_markup=help_item_ikb())
+    await safe_edit_message(call, text, reply_markup=help_item_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "help:cases")
-async def help_cases(call: CallbackQuery):
-    """Что такое карточки дел."""
+@callback_router.callback_query(F.data == "help_cases")
+async def handle_help_cases(call: CallbackQuery):
+    """What are case cards."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
     text = (
         "📋 Карточки дел\n\n"
-        "Карточка дела - это структурированное хранилище информации "
+        "Карточка дела - структурированное хранилище информации "
         "по конкретному делу о банкротстве.\n\n"
         "Что хранится:\n"
-        "• Данные должника (ФИО, адрес, паспорт)\n"
+        "• Данные должника (ФИО, адрес)\n"
         "• Информация о кредиторах\n"
         "• Сумма задолженности\n"
-        "• Документы по делу\n"
-        "• История изменений\n\n"
-        "Карточка привязана к вашему Telegram-аккаунту и доступна только вам.\n\n"
-        "На основе данных карточки бот может генерировать юридические документы."
+        "• Документы по делу\n\n"
+        "На основе карточки бот генерирует юридические документы."
     )
 
-    await call.message.answer(text, reply_markup=help_item_ikb())
+    await safe_edit_message(call, text, reply_markup=help_item_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "help:docs")
-async def help_docs(call: CallbackQuery):
-    """О документах."""
+@callback_router.callback_query(F.data == "help_docs")
+async def handle_help_docs(call: CallbackQuery):
+    """About documents."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
     text = (
         "📄 О документах\n\n"
-        "Бот работает с двумя типами документов:\n\n"
+        "Бот работает с документами:\n\n"
         "1️⃣ Публичный каталог\n"
-        "Образцы и шаблоны документов, доступные всем пользователям:\n"
-        "• Заявления\n"
-        "• Ходатайства\n"
-        "• Прочие документы\n\n"
+        "Образцы документов для всех пользователей\n\n"
         "2️⃣ Документы по делу\n"
-        "Генерируются автоматически на основе данных вашей карточки дела.\n"
-        "Привязаны к конкретному делу и хранятся в вашем архиве.\n\n"
-        "Все документы формируются в формате DOCX и готовы к использованию."
+        "Генерируются на основе данных вашей карточки\n\n"
+        "Все документы формируются в формате DOCX."
     )
 
-    await call.message.answer(text, reply_markup=help_item_ikb())
+    await safe_edit_message(call, text, reply_markup=help_item_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "help:contacts")
-async def help_contacts(call: CallbackQuery):
-    """Контакты и обратная связь."""
+@callback_router.callback_query(F.data == "help_contacts")
+async def handle_help_contacts(call: CallbackQuery):
+    """Contacts and feedback."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
     text = (
@@ -217,21 +489,19 @@ async def help_contacts(call: CallbackQuery):
         "• Предложите улучшение\n"
         "• Задайте вопрос\n\n"
         "📧 Email: support@example.com\n"
-        "💬 Telegram: @support_username\n\n"
-        "Мы постоянно работаем над улучшением сервиса. "
-        "Ваши отзывы помогают делать бота лучше!"
+        "💬 Telegram: @support_username"
     )
 
-    await call.message.answer(text, reply_markup=help_item_ikb())
+    await safe_edit_message(call, text, reply_markup=help_item_menu())
     await call.answer()
 
 
-@callback_router.callback_query(F.data == "help:about")
-async def help_about(call: CallbackQuery):
-    """О боте."""
+@callback_router.callback_query(F.data == "help_about")
+async def handle_help_about(call: CallbackQuery):
+    """About the bot."""
     uid = call.from_user.id
     if not is_allowed(uid):
-        await call.answer()
+        await call.answer("Доступ запрещен", show_alert=True)
         return
 
     text = (
@@ -242,149 +512,133 @@ async def help_about(call: CallbackQuery):
         "• Генерация юридических документов\n"
         "• Каталог образцов документов\n"
         "• Справочная информация\n\n"
-        "Версия: 1.0.0\n"
-        "Статус: MVP (минимальный рабочий продукт)\n\n"
-        "Бот находится в активной разработке. "
-        "Следите за обновлениями!"
+        "Версия: 2.0.0 (Refactored)\n"
+        "Статус: В разработке"
     )
 
-    await call.message.answer(text, reply_markup=help_item_ikb())
+    await safe_edit_message(call, text, reply_markup=help_item_menu())
     await call.answer()
 
 
 # ============================================================================
-# DOCUMENTS CALLBACKS (docs_cat:*, docs_item:*)
+# DOCUMENTS CATALOG CALLBACKS
 # ============================================================================
+
+@callback_router.callback_query(F.data == "docs_catalog")
+async def handle_docs_catalog(call: CallbackQuery):
+    """Show public documents catalog."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    text = (
+        "📄 Публичный каталог документов\n\n"
+        "Здесь вы найдете шаблоны и образцы документов для банкротства.\n"
+        "Выберите категорию:"
+    )
+
+    await safe_edit_message(call, text, reply_markup=docs_catalog_menu())
+    await call.answer()
+
 
 @callback_router.callback_query(F.data.startswith("docs_cat:"))
-async def docs_category(call: CallbackQuery):
-    """Handle document category selection"""
-    # TODO: Extract from bot.py:1698
-    category = call.data.split(":")[-1]
+async def handle_docs_category(call: CallbackQuery):
+    """Show documents in category."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    category = call.data.split(":")[1]
+
+    # TODO: Fetch documents from database
+    text = (
+        f"📋 Категория: {category}\n\n"
+        "Документы в этой категории.\n"
+        "Функция в разработке."
+    )
+
+    await safe_edit_message(call, text, reply_markup=docs_category_menu(category, []))
     await call.answer()
-    # Show documents in category
 
 
 @callback_router.callback_query(F.data.startswith("docs_item:"))
-async def docs_item(call: CallbackQuery):
-    """Handle document item selection"""
-    # TODO: Extract from bot.py:1720
+async def handle_docs_item(call: CallbackQuery):
+    """Show document item."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
     parts = call.data.split(":")
-    await call.answer()
-    # Handle document selection
+    category = parts[1]
+    doc_id = parts[2] if len(parts) > 2 else "unknown"
 
+    text = (
+        f"📄 Документ: {doc_id}\n\n"
+        "Содержимое документа.\n"
+        "Функция в разработке."
+    )
 
-# ============================================================================
-# PROFILE CALLBACKS (profile:*)
-# ============================================================================
-
-@callback_router.callback_query(F.data == "profile:cases")
-async def profile_cases(call: CallbackQuery):
-    """Show cases in profile"""
-    # TODO: Extract from bot.py:1749
+    await safe_edit_message(call, text, reply_markup=docs_item_menu(category))
     await call.answer()
 
 
 # ============================================================================
-# CASE MANAGEMENT CALLBACKS (case:*)
+# FSM CONTROL CALLBACKS
 # ============================================================================
 
-@callback_router.callback_query(F.data.startswith("case:open:"))
-async def case_open(call: CallbackQuery):
-    """Open and display a specific case"""
-    # TODO: Extract from bot.py:1766
-    case_id = int(call.data.split(":")[-1])
-    await call.answer()
-    # Load and display case
+@callback_router.callback_query(F.data == "cancel_fsm")
+async def handle_cancel_fsm(call: CallbackQuery, state: FSMContext):
+    """Cancel any active FSM state."""
+    uid = call.from_user.id
+    if not is_allowed(uid):
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+
+    # Clear FSM state
+    await state.clear()
+
+    text = (
+        "❌ Операция отменена\n\n"
+        "Вы вернулись в главное меню."
+    )
+
+    await safe_edit_message(call, text, reply_markup=main_menu())
+    await call.answer("Отменено")
 
 
-@callback_router.callback_query(F.data.startswith("case:docs:"))
-async def case_docs(call: CallbackQuery, state: FSMContext):
-    """Show documents for a case"""
-    # TODO: Extract from bot.py:1780
-    case_id = int(call.data.split(":")[-1])
-    await call.answer()
-
-
-@callback_router.callback_query(F.data.startswith("case:lastdoc:"))
-async def case_lastdoc_send(call: CallbackQuery):
-    """Send the last generated document for a case"""
-    # TODO: Extract from bot.py:1828
-    case_id = int(call.data.split(":")[-1])
-    await call.answer()
-
-
-@callback_router.callback_query(F.data.startswith("case:archive:"))
-async def case_archive(call: CallbackQuery):
-    """Archive/unarchive a case"""
-    # TODO: Extract from bot.py:1861
-    parts = call.data.split(":")
-    await call.answer()
-
-
-@callback_router.callback_query(F.data.startswith("case:fileidx:"))
-async def case_file_send_by_index(call: CallbackQuery):
-    """Send a file from case by index"""
-    # TODO: Extract from bot.py:1922
-    parts = call.data.split(":")
-    await call.answer()
-
-
-@callback_router.callback_query(F.data.startswith("case:file:"))
-async def case_file_send(call: CallbackQuery):
-    """Send a specific case file"""
-    # TODO: Extract from bot.py:1965
-    parts = call.data.split(":", 3)
-    await call.answer()
-
-
-@callback_router.callback_query(F.data.startswith("case:gen:"))
-async def case_generate_document(call: CallbackQuery):
-    """Generate a document for a case"""
-    # TODO: Extract from bot.py:2004+
-    await call.answer()
+@callback_router.callback_query(F.data == "skip_step")
+async def handle_skip_step(call: CallbackQuery):
+    """
+    Skip optional FSM step.
+    This is handled by the FSM handlers themselves.
+    """
+    await call.answer("Шаг пропущен")
 
 
 # ============================================================================
-# AI & MISC CALLBACKS
+# UTILITY CALLBACKS
 # ============================================================================
-
-@callback_router.callback_query(F.data == "ai:placeholder")
-async def ai_placeholder(call: CallbackQuery):
-    """AI feature placeholder"""
-    # TODO: Extract from bot.py:1553
-    await call.answer("Эта функция появится в следующей версии!", show_alert=True)
-
 
 @callback_router.callback_query(F.data == "noop")
-async def noop_callback(call: CallbackQuery):
-    """No-operation callback (for disabled buttons)"""
-    # TODO: Extract from bot.py:2000
+async def handle_noop(call: CallbackQuery):
+    """No-operation callback (for disabled buttons)."""
     await call.answer()
 
 
 # ============================================================================
-# ADDITIONAL HANDLERS TO EXTRACT
+# REGISTRATION FUNCTION
 # ============================================================================
-# - case:status:* handlers
-# - case:edit:* handlers
-# - case:delete:* handlers
-# - case:party:* handlers (AddParty FSM)
-# - case:asset:* handlers (AddAsset FSM)
-# - case:debt:* handlers (AddDebt FSM)
-# - doc:generate:* handlers
-# - And ~28 more handlers from bot.py
-
 
 def register_callbacks(dp):
     """
-    Register all callback handlers with the dispatcher
+    Register callback router with dispatcher.
 
-    Usage in bot.py:
-        from handlers.callbacks import register_callbacks
-        register_callbacks(dp)
-
-    NOTE: Router registration removed to prevent "Router is already attached" error.
-    Routers are now registered directly in bot.py.
+    Note: This function is kept for backward compatibility.
+    Router can be included directly in bot.py:
+        from handlers.callbacks import callback_router
+        dp.include_router(callback_router)
     """
-    pass
+    dp.include_router(callback_router)
