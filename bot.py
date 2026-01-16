@@ -3140,8 +3140,8 @@ async def send_creditors_menu(message_target, uid: int, cid: int) -> None:
 # REGISTER CALLBACK ROUTER (handlers/callbacks.py)
 # Must be done AFTER all helper functions are defined for circular import
 # ============================================================================
-from handlers.callbacks import callback_router
-dp.include_router(callback_router)
+# from handlers.callbacks import callback_router
+# dp.include_router(callback_router)
 
 
 @dp.callback_query(lambda c: c.data.startswith("case:creditors:"))
