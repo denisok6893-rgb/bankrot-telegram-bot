@@ -3049,8 +3049,7 @@ async def case_card_value_set(message: Message, state: FSMContext):
 
     card[field] = value
     if field in {"debtor_last_name", "debtor_first_name", "debtor_middle_name"}:
-        composed = _compose_debtor_full_name(card)
-        if composed:
+            composed = f"{card.get('surname', '')} {card.get('name', '')}".strip()        if composed:
             card["debtor_full_name"] = composed
 
     upsert_case_card(uid, int(cid), card)
