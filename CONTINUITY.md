@@ -39,3 +39,13 @@ docker-compose logs bankrot_bot | tail -20
 - Warning: pkg_resources deprecated (docxcompose)
 
 **Status**: Docker development workflow fixed
+
+## 2026-01-17 19:20 Emergency Fix ✅
+- ❌ NameError _compose_debtor_full_name (bot.py:3052)
+- ✅ Inline fix: f"{surname} {name}".strip()
+- ✅ SyntaxError multiline → 1-string fix  
+- ✅ Deploy be8d900 → stable polling
+- 📱 Menu buttons working[file:21]
+- 🎉 Docker dev/prod workflow bulletproof
+
+**Status**: Production stable
