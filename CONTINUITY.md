@@ -30,3 +30,12 @@ docker-compose logs bankrot_bot | tail -20
 ## NEXT
 - feature/db-backup
 - feature/rate-limit
+
+## 2026-01-17 Docker Debug ✅
+- ✅ `docker exec -it bankrot_bot_bot_1 bash` → Python 3.12.12
+- ✅ `docxtpl` + `jinja2` installed (0.17.0/3.1.6)
+- ✅ `bankrot_bot.services.docx_jinja` imports OK  
+- ✅ `render_template()` ready (DOCX Jinja2 rendering)
+- Warning: pkg_resources deprecated (docxcompose)
+
+**Status**: Docker development workflow fixed
